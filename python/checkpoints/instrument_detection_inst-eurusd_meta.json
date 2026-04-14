@@ -1,0 +1,15 @@
+{
+  "instrument_id": "inst-eurusd",
+  "strategy_id": "cp-double-top",
+  "strategy_params": {
+    "lookback": 10.0,
+    "rsiPeriod": 14.0,
+    "bbPeriod": 20.0,
+    "atrPeriod": 14.0,
+    "donchianPeriod": 20.0
+  },
+  "timeframe": "D1",
+  "bar_window": 100,
+  "bar_feature_dim": 400,
+  "num_samples": 159
+}

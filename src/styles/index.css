@@ -1,0 +1,121 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* Ensure root and body are always visible (fallback if Tailwind fails) */
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background-color: #000;
+  color: #00ff00;
+  /* Hide scrollbars globally; scroll still works */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+html::-webkit-scrollbar, body::-webkit-scrollbar {
+  display: none;
+}
+#root {
+  min-height: 100vh;
+  width: 100%;
+  display: block;
+  position: relative;
+  z-index: 10000; /* above body::before/::after overlays (z-index 9998/9999) so content is visible */
+}
+
+/* Hide scrollbar while keeping scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Visible scrollbar — easier to grab, matches Cicada aesthetic */
+.scrollbar-visible {
+  scrollbar-width: thin;
+  scrollbar-color: #00ff0080 #000;
+}
+.scrollbar-visible::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scrollbar-visible::-webkit-scrollbar-track {
+  background: #000;
+}
+.scrollbar-visible::-webkit-scrollbar-thumb {
+  background: #00ff0080;
+  border-radius: 5px;
+}
+.scrollbar-visible::-webkit-scrollbar-thumb:hover {
+  background: #00ff00;
+}
+.scrollbar-visible::-webkit-scrollbar-corner {
+  background: #000;
+}
+
+/* ETA display: subtle glow pulse */
+@keyframes eta-glow {
+  0%, 100% { opacity: 1; text-shadow: 0 0 4px currentColor; }
+  50% { opacity: 0.85; text-shadow: 0 0 8px currentColor; }
+}
+.eta-animate {
+  animation: eta-glow 1.5s ease-in-out infinite;
+}
+
+/* Backtest grid visualization */
+@keyframes backtest-scanline {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 8px; }
+}
+/* backtest-stage-pulse removed — no pulsing */
+@keyframes backtest-cell-active {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(255,255,0,0.6); }
+  50% { opacity: 0.6; box-shadow: 0 0 12px rgba(255,255,0,0.9); }
+}
+.backtest-scanline {
+  animation: backtest-scanline 3s linear infinite;
+}
+.backtest-stage-pulse {
+  /* no animation */
+}
+.backtest-cell-active {
+  animation: backtest-cell-active 0.8s ease-in-out infinite;
+}
+@keyframes strategy-feed-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.strategy-feed-item {
+  animation: strategy-feed-in 0.35s ease-out forwards;
+}
+
+/* Submarine radar */
+@keyframes radar-sweep-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+/* radar-blip-pulse removed — no pulsing */
+.radar-sweep {
+  transform-origin: center;
+  animation: radar-sweep-rotate 4s linear infinite;
+  animation-play-state: running;
+}
+.radar-blip-active {
+  /* no animation */
+}
+.radar-blip-ring {
+  /* no animation */
+}
+.radar-scanline {
+  animation: backtest-scanline 4s linear infinite;
+}
+

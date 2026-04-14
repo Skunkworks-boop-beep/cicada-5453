@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CICADA-5453 — Complete System Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #000000;
+      --primary: #00ff00;
+      --accent: #ff6600;
+      --error: #ff4444;
+      --muted: rgba(0, 255, 0, 0.6);
+      --border: #00ff00;
+      --radius: 0.625rem;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--primary);
+      line-height: 1.5;
+      margin: 0;
+      padding: 2rem;
+      font-size: 14px;
+    }
+    h1, h2, h3, h4 {
+      color: var(--primary);
+      font-weight: 600;
+      margin-top: 1.5rem;
+      margin-bottom: 0.75rem;
+      border-bottom: 1px solid rgba(0, 255, 0, 0.3);
+      padding-bottom: 0.25rem;
+    }
+    h1 { font-size: 1.75rem; }
+    h2 { font-size: 1.35rem; }
+    h3 { font-size: 1.15rem; }
+    h4 { font-size: 1rem; }
+    p { margin: 0.5rem 0; }
+    ul, ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+    li { margin: 0.25rem 0; }
+    code, .mono {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(0, 255, 0, 0.08);
+      border: 1px solid rgba(0, 255, 0, 0.3);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+    .accent { color: var(--accent); }
+    .error { color: var(--error); }
+    .muted { color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0.75rem 0;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid rgba(0, 255, 0, 0.4);
+      padding: 0.5rem 0.75rem;
+      text-align: left;
+    }
+    th {
+      background: rgba(0, 255, 0, 0.1);
+      color: var(--primary);
+      font-weight: 600;
+    }
+    tr:nth-child(even) { background: rgba(0, 255, 0, 0.03); }
+    .box {
+      border: 2px solid var(--border);
+      background: rgba(0, 0, 0, 0.5);
+      padding: 1rem;
+      margin: 0.75rem 0;
+      box-shadow: 0 0 15px rgba(0, 255, 0, 0.15);
+    }
+    .cover {
+      text-align: center;
+      padding: 4rem 2rem;
+      border: 2px solid var(--primary);
+      margin-bottom: 3rem;
+    }
+    .cover h1 { border: none; margin-top: 0; }
+    .toc ul { list-style: none; padding-left: 0; }
+    .toc li { margin: 0.35rem 0; }
+    .toc a { color: var(--primary); text-decoration: none; }
+    .toc a:hover { color: var(--accent); text-decoration: underline; }
+    .page-break { page-break-before: always; }
+    .no-print-break { page-break-inside: avoid; }
+    @media print {
+      body { padding: 1rem; font-size: 11px; }
+      .page-break { page-break-before: always; }
+      .no-print-break { page-break-inside: avoid; }
+      .box { break-inside: avoid; }
+      table { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>CICADA-5453</h1>
+  <p class="muted">Complete System Documentation</p>
+  <p>Every functionality, logic, feature, button, and behavioral edge case</p>
+  <p style="margin-top: 2rem; font-size: 12px;">Theme: Terminal-style UI (black, green #00ff00, orange #ff6600, red #ff4444, JetBrains Mono)</p>
+</div>
+
+<h2 id="toc">Table of Contents</h2>
+<nav class="toc no-print-break">
+  <ul>
+    <li><a href="#overview">1. Project overview & architecture</a></li>
+    <li><a href="#routes">2. Routes & pages</a></li>
+    <li><a href="#ui-components">3. UI components</a></li>
+    <li><a href="#features">4. Features & user actions</a></li>
+    <li><a href="#api">5. Backend API reference</a></li>
+    <li><a href="#edge-cases">6. Edge cases & validation</a></li>
+    <li><a href="#risk">7. Risk & execution rules</a></li>
+    <li><a href="#errors">8. Error states & messages</a></li>
+    <li><a href="#loading">9. Loading & empty states</a></li>
+  </ul>
+</nav>
+
+<!-- ========== 1. OVERVIEW ========== -->
+<h2 id="overview" class="page-break">1. Project overview & architecture</h2>
+<p><strong>CICADA-5453</strong> is a trading system with a React frontend and optional Python FastAPI backend. The frontend is a single-page app (Vite + React) that can run in <strong>demo mode</strong> (no MT5) or connect to MT5 and the neural-network API for backtesting, bot building, and live execution.</p>
+<ul>
+  <li><strong>Frontend</strong>: <code>src/</code> — React app, global <code>TradingStore</code>, no Redux.</li>
+  <li><strong>Backend</strong>: <code>python/cicada_nn/</code> — FastAPI app, NN training, MT5 client, backtest/research servers.</li>
+  <li><strong>Persistence</strong>: Frontend uses <code>localStorage</code> key <code>cicada-5453-store</code>; backend persists bots, positions, execution log under <code>checkpoints/</code>.</li>
+  <li><strong>API base URL</strong>: <code>VITE_NN_API_URL</code> (default <code>origin:8000</code>). Remote server URL can be set via Server Offload and stored in <code>localStorage</code>; all NN/MT5 requests then use that URL.</li>
+</ul>
+
+<h3>Theme & design system</h3>
+<ul>
+  <li><strong>Background</strong>: <code>#000000</code></li>
+  <li><strong>Primary text / borders</strong>: <code>#00ff00</code> (green)</li>
+  <li><strong>Accent / warnings</strong>: <code>#ff6600</code> (orange)</li>
+  <li><strong>Error</strong>: <code>#ff4444</code> (red)</li>
+  <li><strong>Scrollbar</strong>: <code>#00ff0080</code> thumb on black</li>
+  <li><strong>Font</strong>: JetBrains Mono (400, 500, 600, 700)</li>
+  <li><strong>Animations</strong>: <code>eta-glow</code>, <code>backtest-scanline</code>, <code>backtest-cell-active</code>, <code>strategy-feed-in</code>, <code>radar-sweep-rotate</code></li>
+</ul>
+
+<!-- ========== 2. ROUTES ========== -->
+<h2 id="routes" class="page-break">2. Routes & pages</h2>
+<table>
+  <thead>
+    <tr><th>Route</th><th>Component</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>/</code></td><td>Login</td><td>Login: MT5 credentials or “Continue without MT5 (demo mode)”; terminal-style UI, matrix-style background.</td></tr>
+    <tr><td><code>/dashboard</code></td><td>Dashboard</td><td>Main app: header, status strip, two-column grid of panels (instruments, backtest, bots, portfolio, brokers, etc.).</td></tr>
+  </tbody>
+</table>
+<p>Only these two routes; no nested routes.</p>
+
+<!-- ========== 3. UI COMPONENTS ========== -->
+<h2 id="ui-components" class="page-break">3. UI components</h2>
+
+<h3>Layout / shell</h3>
+<ul>
+  <li><strong>TerminalHeader</strong> — Dashboard top section (logo, LIVE/DISCONNECTED badge, time, Bot execution toggle, broker statuses, Logout).</li>
+  <li><strong>TickerBar</strong> — Ticker/price strip.</li>
+  <li><strong>CicadaLogo</strong> — Logo (Login and Dashboard).</li>
+</ul>
+
+<h3>Instruments & strategies</h3>
+<ul>
+  <li><strong>InstrumentSelector</strong> — Chooses active instrument for Bot Builder and chart.</li>
+  <li><strong>InstrumentManager</strong> — Instrument registry: Symbol, Type, Broker, Spread, Market (open/closed), Rebuild interval, Actions; toggle active/inactive per row; “Apply rebuild interval to all” dropdown.</li>
+  <li><strong>StrategyLibrary</strong> — List of 200+ strategies with search; enable/disable; Select all / Deselect all; category and regime labels.</li>
+</ul>
+
+<h3>Backtest & research</h3>
+<ul>
+  <li><strong>BacktestEngine</strong> — Date range, timeframes, regimes, coverage (Low/Medium/High), Run backtest / Run research; progress and error state; MT5 status.</li>
+  <li><strong>BacktestGridVisualization</strong> — Grid view of backtest results (cells by instrument/timeframe/strategy; profit color green/orange).</li>
+</ul>
+
+<h3>Bots</h3>
+<ul>
+  <li><strong>BotBuilder</strong> — Per-instrument bot: timeframes, regimes, styles; Rebuild, Build, Deploy/Undeploy; build progress bar; cold-start notice; last error.</li>
+  <li><strong>BotRegistry</strong> — List of bots and status.</li>
+  <li><strong>BotsOverview</strong> — Overview of bots on dashboard.</li>
+</ul>
+
+<h3>Portfolio & execution</h3>
+<ul>
+  <li><strong>LivePortfolio</strong> — Balance, equity, open positions, P/L; Sync positions; closed trades list; data source (LIVE / Stale / No data).</li>
+  <li><strong>BotExecutionLog</strong> — Execution events log.</li>
+  <li><strong>LiveSpreadPanel</strong> — Live spreads per symbol.</li>
+  <li><strong>PriceChart</strong> — Price chart for selected instrument.</li>
+</ul>
+
+<h3>Brokers & config</h3>
+<ul>
+  <li><strong>BrokersManager</strong> — Deriv, eXness API, MT5 add-on; Connect, gear (credentials), Add broker; Deriv synthetic validation and “Add all”.</li>
+  <li><strong>ServerOffload</strong> — Remote server: username, IP, password, port; Connect / Use this machine; shows “Offloading to” or “Using this machine”.</li>
+  <li><strong>TradingModes</strong> — Trading mode selection.</li>
+</ul>
+
+<h3>Shared / UI primitives</h3>
+<ul>
+  <li><strong>CicadaCheckbox</strong>, <strong>CicadaRadio</strong>, <strong>CicadaDropdown</strong> — Styled controls.</li>
+  <li><strong>EtaDisplay</strong> — ETA/progress text.</li>
+  <li><strong>RetroBox</strong> — Bordered box.</li>
+  <li><strong>ImageWithFallback</strong> — Image with fallback.</li>
+  <li><strong>components/ui/*</strong> — Radix-based primitives: accordion, alert, alert-dialog, button, card, chart, checkbox, dialog, dropdown-menu, form, input, popover, select, separator, sheet, skeleton, table, tabs, tooltip. <strong>Sonner Toaster</strong> exists in <code>ui/sonner.tsx</code> but is not mounted in <code>App.tsx</code> or <code>main.tsx</code>, so toasts are not shown unless added to the root.</li>
+</ul>
+
+<!-- ========== 4. FEATURES & USER ACTIONS ========== -->
+<h2 id="features" class="page-break">4. Features & user actions</h2>
+
+<h3>Auth (Login page)</h3>
+<div class="box no-print-break">
+  <p><strong>Purpose</strong>: Enter app via MT5 or demo.</p>
+  <p><strong>Fields</strong>: User identifier (MT5 account), Pass key (password), Server (optional). Checkbox: “Continue without MT5 (demo mode)”.</p>
+  <p><strong>Button</strong>: “INITIATE SECURE ACCESS”.</p>
+  <p><strong>Logic</strong>: If demo mode → navigate to <code>/dashboard</code> after 800 ms. Otherwise <code>postMt5Connect(username, password, server)</code>; on success <code>applyMt5LoginSuccess</code> and navigate after 1 s; on failure show <code>res.message</code> or “MT5 connection failed” / “Connection failed”.</p>
+  <p><strong>UI</strong>: Animated terminal text; matrix-style canvas; error block below form (red border); loading state on button (“AUTHENTICATING...”); bottom strip “AUTHORIZED ACCESS ONLY”.</p>
+  <p><strong>Validation</strong>: Username and password <code>required={!demoMode}</code>; server optional; fields disabled when demo mode.</p>
+</div>
+
+<h3>Dashboard</h3>
+<div class="box no-print-break">
+  <p><strong>Purpose</strong>: Central hub for instruments, strategies, backtest, bots, portfolio, brokers.</p>
+  <p><strong>Layout</strong>: Sticky header (logo, LIVE/DISCONNECTED badge, time, Bot execution on/off, broker statuses, Logout); status strip (BOTS, STRAT, WIN, P/L, INST); two columns (left: Instrument selector, chart, spread, Backtest, Bot Builder, Bot Registry, Instrument Manager; right: Server Offload, Live Portfolio, Bot Execution Log, Brokers, Trading Modes, Strategy Library).</p>
+  <p><strong>Actions</strong>: Logout → <code>/</code>; toggle “BOT EXECUTION ON/OFF”; clock updates every second; scheduled rebuilds every 60 s for due bots (rebuild + buildBot).</p>
+  <p><strong>P/L</strong>: Total P/L = open (portfolio.totalPnl) + realized (closed trades with contractId); “—” when no data or not finite.</p>
+</div>
+
+<h3>Instruments</h3>
+<ul>
+  <li><strong>InstrumentManager</strong>: Toggle active/inactive per instrument (row click); “Apply rebuild interval to all” dropdown; table: Symbol, Type, Broker, Spread, Market (open/closed), Rebuild interval, Actions.</li>
+  <li><strong>InstrumentSelector</strong>: Chooses which instrument is selected for Bot Builder and chart.</li>
+</ul>
+
+<h3>Strategies</h3>
+<ul>
+  <li><strong>StrategyLibrary</strong>: Search by name/id/category; enable/disable per strategy; “SELECT ALL” / “DESELECT ALL”; display enabled count and category/regimes.</li>
+</ul>
+
+<h3>Backtest</h3>
+<div class="box no-print-break">
+  <p><strong>BacktestEngine</strong>: Select date range, timeframes, regimes, coverage; “Run backtest” or “Run research”. If backend available and offload configured, tries server backtest first; else client-side. Progress and errors shown.</p>
+  <p><strong>Buttons</strong>: Run backtest, Run research; Robust mode / Grid expanded toggles; [RUN], [CANCEL].</p>
+  <p><strong>Errors (block run)</strong>: “No active instruments”, “Select at least one timeframe”, “Invalid date range”, “No strategies enabled”, plus API/run errors.</p>
+</div>
+
+<h3>Bot builder</h3>
+<div class="box no-print-break">
+  <p><strong>Actions</strong>: Rebuild (mark for rebuild), Build (trigger NN build with backtest results), Deploy / Undeploy; select/deselect timeframes (including “Select all” / “Deselect all”), regimes, styles.</p>
+  <p><strong>State</strong>: Bot status (deployed, building, ready, outdated); build progress %; lastError; cold-start notice (warmup scale &lt; 1).</p>
+  <p><strong>Logic</strong>: Build uses train slice only (validation slice not sent); calls <code>postBuild</code> with best results and instrument types; on success stores <code>feature_vector</code> on bot.</p>
+</div>
+
+<h3>Portfolio</h3>
+<ul>
+  <li><strong>LivePortfolio</strong>: Balance, equity, open positions, P/L; “Sync positions” button; closed trades (with contractId). Intervals: portfolio tick 5 s, balance sync 10 s, positions sync 15 s when connected and have positions.</li>
+  <li><strong>Sync</strong>: <code>syncBrokerPositions()</code> — load from Deriv / eXness API / MT5; only <code>setPositions</code> used for sync; new bot-driven positions go through <code>addPositionWithRiskCheck</code>.</li>
+</ul>
+
+<h3>Brokers</h3>
+<div class="box no-print-break">
+  <p><strong>BrokersManager</strong>: Three default brokers: Deriv, eXness API, MT5 add-on. Per broker: Connect, gear (edit credentials), instrument count.</p>
+  <p><strong>Deriv</strong>: App ID + Token; “Refresh synthetics”, “Add all” from validation.</p>
+  <p><strong>eXness</strong>: API key, optional Base URL.</p>
+  <p><strong>MT5</strong>: login, password, server.</p>
+  <p><strong>“Add broker”</strong>: Opens form (name, type, credentials). Inline forms for credentials (no separate modal); <code>editingId</code> state for which broker is being edited.</p>
+</div>
+
+<h3>Server offload</h3>
+<ul>
+  <li><strong>ServerOffload</strong>: Username, IP, password, port; “Connect” runs <code>testServerConnection</code> with Basic auth; on success saves URL to <code>localStorage</code> and all NN/MT5 requests use it. “Use this machine” clears remote URL.</li>
+</ul>
+
+<!-- ========== 5. API REFERENCE ========== -->
+<h2 id="api" class="page-break">5. Backend API reference</h2>
+<p>Python FastAPI app: <code>python/cicada_nn/api.py</code>. Base path from <code>getNnApiBaseUrl()</code> (remote or <code>VITE_NN_API_URL</code> / origin:8000).</p>
+<table>
+  <thead>
+    <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>GET</td><td><code>/</code></td><td>Service info: service, status, docs, health.</td></tr>
+    <tr><td>GET</td><td><code>/favicon.ico</code></td><td>204 no content.</td></tr>
+    <tr><td>GET</td><td><code>/health</code></td><td>Health: status, service, device, cuda_available.</td></tr>
+    <tr><td>POST</td><td><code>/build</code></td><td>Train instrument bot NN from backtest results; optional <code>bars</code> for detection model; returns success, message, checkpoint_path, feature_vector, oos_accuracy, detection_*.</td></tr>
+    <tr><td>POST</td><td><code>/predict</code></td><td>NN inference: feature_vector, instrument_type, regime, timeframe, scope, etc.; returns actions, style_names, confidence, size_multiplier, sl_pct, tp_r.</td></tr>
+    <tr><td>GET</td><td><code>/bots</code></td><td>Return persisted bot configs (JSON file).</td></tr>
+    <tr><td>POST</td><td><code>/bots</code></td><td>Save bot configs (list).</td></tr>
+    <tr><td>GET</td><td><code>/positions</code></td><td>Return persisted positions + closedTradesByBot, balance, equity, P/L.</td></tr>
+    <tr><td>POST</td><td><code>/positions</code></td><td>Save positions and closed trades.</td></tr>
+    <tr><td>POST</td><td><code>/execution-log/append</code></td><td>Append execution events.</td></tr>
+    <tr><td>GET</td><td><code>/execution-log</code></td><td>Get recent events (query: limit, symbol).</td></tr>
+    <tr><td>POST</td><td><code>/mt5/connect</code></td><td>MT5 login (login, password, server).</td></tr>
+    <tr><td>GET</td><td><code>/mt5/status</code></td><td>mt5_available, connected.</td></tr>
+    <tr><td>GET</td><td><code>/mt5/account</code></td><td>Balance/equity when connected.</td></tr>
+    <tr><td>GET</td><td><code>/mt5/ohlc</code></td><td>OHLC bars (symbol, timeframe, count, dateFrom, dateTo).</td></tr>
+    <tr><td>GET</td><td><code>/mt5/prices</code></td><td>Bid/ask per symbol.</td></tr>
+    <tr><td>GET</td><td><code>/mt5/symbols_spread</code></td><td>Spread in points per symbol.</td></tr>
+    <tr><td>GET</td><td><code>/mt5/positions</code></td><td>Open MT5 positions.</td></tr>
+    <tr><td>POST</td><td><code>/mt5/close-partial</code></td><td>Partial close by ticket.</td></tr>
+    <tr><td>POST</td><td><code>/mt5/order</code></td><td>Market order (symbol, side, volume, sl, tp).</td></tr>
+    <tr><td>POST</td><td><code>/backtest</code></td><td>Server-side backtest; body: instrumentIds, strategyIds, timeframes, regimes, dateFrom, dateTo, bars, instrument_symbols, strategy_names, spreads, risk/regime options.</td></tr>
+    <tr><td>POST</td><td><code>/research/grid</code></td><td>Regime calibration + param tune; returns regimeTunes, paramTunes.</td></tr>
+    <tr><td>POST</td><td><code>/research/grid/stream</code></td><td>Same as grid but NDJSON stream with progress and final payload.</td></tr>
+    <tr><td>POST</td><td><code>/research/backward-validate</code></td><td>Backward validation from closed trades; returns validatedTrades, calibrationHints, summary.</td></tr>
+  </tbody>
+</table>
+<p><strong>Timeouts</strong>: Build 120 s; predict 15 s; getBots/postBots 5 s; MT5 connect 15 s; backtest 300 s; research 600 s; testServerConnection 10 s (or 12 s in ServerOffload). No automatic retry in api.ts.</p>
+
+<!-- ========== 6. EDGE CASES & VALIDATION ========== -->
+<h2 id="edge-cases" class="page-break">6. Edge cases & validation</h2>
+
+<h3>Form validation</h3>
+<ul>
+  <li><strong>Login</strong>: Username and password required when not demo mode; server optional. Trim on submit.</li>
+  <li><strong>ServerOffload</strong>: Username, IP, password required; port default 8000; URL built from host/port; invalid port clamped to 1–65535.</li>
+  <li><strong>Brokers</strong>: Deriv needs App ID + Token; eXness API key; MT5 login + password (server optional). Connect only when credentials present; otherwise open “edit” form.</li>
+  <li><strong>BacktestEngine</strong>: Run blocked with explicit messages: no active instruments, no timeframes selected, invalid date range, no strategies enabled.</li>
+</ul>
+
+<h3>Backtest bars</h3>
+<p>Server backtest and research validate bars for all instrument×timeframe keys and minimum length (<code>MIN_BARS_REQUIRED_BACKTEST</code> 10, <code>MIN_BARS_REQUIRED_RESEARCH</code> 200); missing/insufficient bars return 400 and halt (no inference or skip).</p>
+
+<h3>Instrument migration</h3>
+<p>On load, bots pointing to removed instrument IDs are reassigned to first valid instrument; backtest results for removed instruments are dropped.</p>
+
+<h3>Deriv synthetics</h3>
+<p>Only certain groups (e.g. Volatility, Crash/Boom, Jump, Step, Range Break, World) are in the registry; some Volatility/DEX/Drift symbols may not be returned for the account and are not offered.</p>
+
+<h3>Out-of-sample & build</h3>
+<p>Train slice (e.g. first 80% by time) used for build; validation slice not sent to training. Regime at inference: Predict called with regime from <code>detectRegime(bars)</code> and timeframe so decisions are regime-aware.</p>
+
+<!-- ========== 7. RISK & EXECUTION ========== -->
+<h2 id="risk" class="page-break">7. Risk & execution rules</h2>
+<p>All bot-driven position opens must use <strong><code>addPositionWithRiskCheck</code></strong> (in <code>portfolio.ts</code>). It calls <strong><code>tryOpenPosition</code></strong> (in <code>risk.ts</code>), which:</p>
+<ul>
+  <li>Ensures finite equity, checks drawdown, max positions per instrument, correlated exposure.</li>
+  <li>Runs <strong>risk library</strong> for the trade scope (scalp/day/swing/position); first failing rule returns <code>allowed: false</code> with <code>ruleId</code> and <code>ruleName</code>.</li>
+</ul>
+<p><strong>Risk library</strong> (<code>riskLibrary/index.ts</code>): 50+ rules in categories — drawdown, position_limit, exposure, volatility, time, capital, daily_loss, concentration, correlation, sizing, regime, instrument, compliance, liquidity. Filtered by <code>scope</code>; evaluated in order; first failure blocks.</p>
+<p><strong>Concentration</strong>: “Max single 20%” is skipped for the first position so the first trade is not blocked.</p>
+<p><strong>Size</strong>: Zero or invalid (non-finite or ≤ 0) after Kelly/warmup is rejected; only finite size &gt; 0 is added.</p>
+
+<h3>Drift detection</h3>
+<p>After ≥10 closed trades per bot, compare live win rate and profit factor to backtest (<code>drift.ts</code>). If live win rate ≥15 pp below backtest or live profit factor &lt; 0.7 (with backtest ≥ 1.2), call <code>setDriftDetected(botId, reason)</code> and schedule early rebuild. Constants: <code>DRIFT_MIN_CLOSED_TRADES</code> 10, <code>DRIFT_WIN_RATE_THRESHOLD_PP</code> 0.15, <code>DRIFT_PROFIT_FACTOR_MIN</code> 0.7.</p>
+
+<h3>Risk library rules (summary)</h3>
+<p>Rules are filtered by trade scope (scalp/day/swing/position); first failing rule blocks the trade. When a rule blocks, <code>ruleId</code> and <code>ruleName</code> are returned for logging.</p>
+<table>
+  <thead><tr><th>Category</th><th>Example rules / messages</th></tr></thead>
+  <tbody>
+    <tr><td>Drawdown</td><td>Max drawdown reached; Drawdown &gt; 10% / 15% from peak; Equity must be positive; Scalp drawdown limit 5%.</td></tr>
+    <tr><td>Position limits</td><td>Max N position(s) per instrument; Bot max positions reached; Max same-direction 4; Max 5 positions (scalp/day), 10 (swing/position); Max 3 per scope; Scalp 3, Day 5, Swing 7, Position 8.</td></tr>
+    <tr><td>Exposure</td><td>Correlated exposure limit; Single position risk cap 2%; Scalp total risk 5%, Day 10%, Swing 15%, Position 20%; Notional cap 50% of equity; Long/short imbalance cap.</td></tr>
+    <tr><td>Volatility</td><td>Scalp blocked in high volatility; Extreme volatility: no new positions; Day vol cap 2%, Swing 4%, Position 6%.</td></tr>
+    <tr><td>Time</td><td>Scalp only 06–22 UTC; Day only 07–21 UTC; No scalp on weekend; Avoid Asia close (00–02 UTC); Avoid NY close for scalp.</td></tr>
+    <tr><td>Capital</td><td>Min equity 100; Scalp min equity 1000; Risk per trade exceeded; Balance must be positive; Equity down 20% from peak.</td></tr>
+    <tr><td>Daily loss</td><td>Daily loss limit 5%; Daily/drawdown loss limit 10%; Scalp daily stop 3%; Day daily stop 5%.</td></tr>
+    <tr><td>Concentration</td><td>Single position max 20% of total risk (skipped for first position); Scalp: one position per instrument; Max 4 same direction; Position: max 2 position-scope; Single notional cap 25%; Scalp max 2 same direction.</td></tr>
+    <tr><td>Correlation</td><td>Total risk (correlated) cap; Scalp total risk 4%, Day 8%, Swing 12%.</td></tr>
+    <tr><td>Sizing</td><td>Min risk per trade 0.1%; Scalp single risk max 1.5%; Stop loss too tight; Day 2%, Swing 2.5%.</td></tr>
+    <tr><td>Regime / instrument</td><td>Scalp blocked in unknown/volatile regime; Crypto/Synthetic/Indices caps and diversify.</td></tr>
+    <tr><td>Compliance / liquidity</td><td>Position size must be positive; Entry price must be positive; Max drawdown (compliance); Min risk distance 0.5%; Min notional 1.</td></tr>
+  </tbody>
+</table>
+
+<!-- ========== 8. ERROR STATES ========== -->
+<h2 id="errors" class="page-break">8. Error states & messages</h2>
+<ul>
+  <li><strong>Login</strong>: <code>error</code> state; message from API or “MT5 connection failed” / “Connection failed”; red border block.</li>
+  <li><strong>BacktestEngine</strong>: <code>setError(...)</code> for no instruments, no strategies, no timeframes, invalid date range, backtest/research failure.</li>
+  <li><strong>BotBuilder</strong>: <code>bot.lastError</code> in red box; build failure message from API.</li>
+  <li><strong>BrokersManager</strong>: <code>derivValidationError</code>; connect failure from store.</li>
+  <li><strong>ServerOffload</strong>: <code>message</code> with type success/error (username, IP, password, connection result).</li>
+  <li><strong>testServerConnection</strong>: 401 “Authentication failed”; 403 “Access denied”; 404 “API not found (check port)”; 5xx “Server error”; timeout “Connection timed out”; network “Server unreachable”.</li>
+  <li><strong>ErrorBoundary</strong>: Catches render errors; full-page “Something went wrong” + error message; <code>componentDidCatch</code> logs to console.</li>
+</ul>
+
+<!-- ========== 9. LOADING & EMPTY STATES ========== -->
+<h2 id="loading" class="page-break">9. Loading & empty states</h2>
+<ul>
+  <li><strong>Login</strong>: Button shows “AUTHENTICATING...” with spinners when <code>isLoading</code>.</li>
+  <li><strong>BotBuilder</strong>: Build progress bar and EtaDisplay when status is “building”; “Select an instrument” / “No bot for this instrument” when no selection/bot.</li>
+  <li><strong>BacktestEngine</strong>: Progress from store during run; “Run backtest” disabled or feedback during run.</li>
+  <li><strong>LivePortfolio</strong>: “No data” when <code>dataSource === 'none'</code>; “Stale — reconnect” when disconnected; “Sync positions” shows syncing/synced/error with timeouts.</li>
+  <li><strong>StrategyLibrary</strong>: “No strategies match” when filter returns empty.</li>
+  <li><strong>BrokersManager</strong>: Connecting state per broker; instrument count 0 for MT5 until connected.</li>
+</ul>
+
+<p class="muted" style="margin-top: 3rem;"><h2 id="pdf">Generating a PDF</h2>
+<p>Open <code>docs/CICADA_5453_Documentation.html</code> in a browser, then use <strong>File → Print</strong> and choose <strong>Save as PDF</strong>. The document uses the same Cicada terminal theme and is styled for print with page breaks.</p>
+
+<p class="muted" style="margin-top: 3rem;">End of documentation. open this file in a browser, then File → Print → Save as PDF (or choose “Save as PDF” as destination).</p>
+
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Optional: MT5 backend (Windows/Linux; no macOS wheel). Requires MT5 terminal installed.
+MetaTrader5>=5.0.45

@@ -1,0 +1,49 @@
+{
+  "instrument_id": "inst-deriv-r10",
+  "trained_at_iso": "2026-03-11T11:30:20.077043+00:00",
+  "data_end_min": "2026-03-11T11:15:00.000Z",
+  "data_end_max": "2026-03-11T11:29:00.000Z",
+  "num_rows": 387,
+  "from_scratch": true,
+  "strategy_feature_dim": 102,
+  "strategy_id_to_idx": {
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=15.0|lookback=10.0|rsiPeriod=14.0": 0,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=15.0|lookback=12.0|rsiPeriod=14.0": 1,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=15.0|lookback=14.0|rsiPeriod=14.0": 2,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=15.0|lookback=8.0|rsiPeriod=14.0": 3,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=10.0|rsiPeriod=14.0": 4,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=12.0|rsiPeriod=14.0": 5,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=14.0|rsiPeriod=14.0": 6,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=8.0|rsiPeriod=14.0": 7,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=25.0|lookback=10.0|rsiPeriod=14.0": 8,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=25.0|lookback=12.0|rsiPeriod=14.0": 9,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=25.0|lookback=14.0|rsiPeriod=14.0": 10,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=25.0|lookback=8.0|rsiPeriod=14.0": 11,
+    "cs-three-line-strike-bear|bodyPct=0.08|wickPct=0.55": 12,
+    "cs-three-line-strike-bear|bodyPct=0.08|wickPct=0.6": 13,
+    "cs-three-line-strike-bear|bodyPct=0.08|wickPct=0.65": 14,
+    "cs-three-line-strike-bear|bodyPct=0.12|wickPct=0.55": 15,
+    "cs-three-line-strike-bear|bodyPct=0.12|wickPct=0.6": 16,
+    "cs-three-line-strike-bear|bodyPct=0.12|wickPct=0.65": 17,
+    "cs-three-line-strike-bear|bodyPct=0.1|wickPct=0.55": 18,
+    "cs-three-line-strike-bear|bodyPct=0.1|wickPct=0.6": 19,
+    "cs-three-line-strike-bear|bodyPct=0.1|wickPct=0.65": 20
+  },
+  "timeframe_to_idx": {
+    "M1": 0,
+    "M15": 1,
+    "M5": 2
+  },
+  "regime_to_idx": {
+    "any": 0,
+    "breakout": 1,
+    "consolidation": 2,
+    "ranging": 3,
+    "reversal_bear": 4,
+    "reversal_bull": 5,
+    "trending_bear": 6,
+    "trending_bull": 7,
+    "unknown": 8,
+    "volatile": 9
+  }
+}

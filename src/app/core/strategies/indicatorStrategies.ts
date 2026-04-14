@@ -1,0 +1,75 @@
+/**
+ * Indicator-based strategies — 55+ with entry/exit logic.
+ */
+import type { TradeLogicDef, MarketRegime, TradeStyle } from '../types';
+
+const R: MarketRegime[] = ['trending_bull', 'trending_bear', 'ranging', 'reversal_bull', 'reversal_bear', 'breakout', 'consolidation', 'volatile', 'unknown'];
+const S: TradeStyle[] = ['scalping', 'day', 'medium_swing', 'swing', 'sniper'];
+
+function ind(id: string, name: string, logic: string, regimes: MarketRegime[], styles: TradeStyle[], entry: string, exit: string, enabled = true): TradeLogicDef {
+  return { id, name, category: 'indicator', logic, regimes, styles, enabled, entryLogic: entry, exitLogic: exit };
+}
+
+export const INDICATOR_STRATEGIES: TradeLogicDef[] = [
+  ind('ind-rsi-div', 'RSI Divergence', 'Price vs RSI divergence; momentum shift.', R, S, 'Entry on RSI exit from overbought/oversold or trend break.', 'Target opposite extreme or structure; stop beyond divergence.'),
+  ind('ind-rsi-overbought', 'RSI Overbought Reversal', 'RSI > 70 then turn down; bearish.', ['reversal_bear', 'trending_bull'], S, 'Entry on RSI cross below 70 with bearish candle.', 'Target RSI 50 or support.'),
+  ind('ind-rsi-oversold', 'RSI Oversold Reversal', 'RSI < 30 then turn up; bullish.', ['reversal_bull', 'trending_bear', 'unknown'], S, 'Entry on RSI cross above 30 with bullish candle.', 'Target RSI 50 or resistance.'),
+  ind('ind-rsi-trend', 'RSI Trend Filter', 'RSI 40–60 in trend; filter entries.', R, S, 'Only long when RSI > 40; short when RSI < 60.', 'Exit on RSI extreme or structure.'),
+  ind('ind-macd-cross', 'MACD Crossover', 'MACD line crosses signal; trend and momentum.', R, ['day', 'medium_swing', 'swing', 'sniper'], 'Entry on crossover with price structure.', 'Exit on opposite cross or trailing stop.'),
+  ind('ind-macd-hist-div', 'MACD Histogram Divergence', 'Price vs histogram divergence.', ['reversal_bull', 'reversal_bear', 'trending_bull', 'trending_bear'], S, 'Entry when histogram contracts from extreme.', 'Target histogram zero or structure.'),
+  ind('ind-macd-zero', 'MACD Zero Line Rejection', 'MACD bounces at zero in trend.', ['trending_bull', 'trending_bear'], S, 'Entry on touch of zero and continuation.', 'Target prior extreme.'),
+  ind('ind-bb-squeeze', 'Bollinger Squeeze', 'Narrow bands then expansion; breakout.', ['consolidation', 'breakout', 'ranging', 'volatile'], ['scalping', 'day', 'sniper'], 'Entry on close outside bands after squeeze.', 'Target opposite band or ATR trail.'),
+  ind('ind-bb-walk', 'Bollinger Band Walk', 'Price walks upper/lower band in trend.', ['trending_bull', 'trending_bear'], S, 'Entry on touch of band in trend direction.', 'Target middle band or opposite.'),
+  ind('ind-bb-reversion', 'Bollinger Mean Reversion', 'Price at band; reversion to mean.', ['ranging', 'consolidation'], ['scalping', 'day', 'sniper'], 'Entry at band touch; target middle.', 'Stop beyond band.'),
+  ind('ind-ema-ribbon', 'EMA Ribbon', 'Multiple EMAs; trend and pullback.', ['trending_bull', 'trending_bear', 'ranging'], S, 'Entry on pullback to ribbon in trend.', 'Target next ribbon or swing.'),
+  ind('ind-ema-cross-9-21', 'EMA 9/21 Crossover', 'Fast/slow EMA cross; trend signal.', R, S, 'Entry on cross with candle confirmation.', 'Exit on opposite cross.'),
+  ind('ind-ema-cross-50-200', 'EMA 50/200 Golden/Death Cross', 'Major trend change signal.', ['trending_bull', 'trending_bear', 'reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on cross; confirm with volume.', 'Target prior swing.'),
+  ind('ind-vwap', 'VWAP Bounce/Rejection', 'Price vs VWAP; mean reversion or trend.', ['ranging', 'trending_bull', 'trending_bear', 'volatile'], ['scalping', 'day', 'sniper'], 'Entry on VWAP touch in trend or first touch.', 'Target opposite side or ATR.'),
+  ind('ind-vwap-bands', 'VWAP Standard Deviation Bands', 'Bands around VWAP; overextension.', ['ranging', 'volatile'], ['scalping', 'day'], 'Entry at band touch for reversion.', 'Target VWAP.'),
+  ind('ind-stoch-overbought', 'Stochastic Overbought', 'Stoch > 80 then cross down; bearish.', ['reversal_bear', 'trending_bull'], S, 'Entry on %K cross below %D in overbought.', 'Target 50 or support.'),
+  ind('ind-stoch-oversold', 'Stochastic Oversold', 'Stoch < 20 then cross up; bullish.', ['reversal_bull', 'trending_bear'], S, 'Entry on %K cross above %D in oversold.', 'Target 50 or resistance.'),
+  ind('ind-stoch-div', 'Stochastic Divergence', 'Price vs stochastic divergence.', ['reversal_bull', 'reversal_bear'], S, 'Entry on divergence confirmation.', 'Target structure.'),
+  ind('ind-cci-overbought', 'CCI Overbought', 'CCI > 100 then turn down.', ['reversal_bear'], S, 'Entry on CCI cross below 100.', 'Target 0 or support.'),
+  ind('ind-cci-oversold', 'CCI Oversold', 'CCI < -100 then turn up.', ['reversal_bull'], S, 'Entry on CCI cross above -100.', 'Target 0 or resistance.'),
+  ind('ind-adx-trend', 'ADX Trend Strength', 'ADX > 25; trade in direction of +DI/-DI.', ['trending_bull', 'trending_bear'], S, 'Entry when ADX rising and +DI > -DI (long).', 'Exit when ADX falls or cross.'),
+  ind('ind-adx-breakout', 'ADX Breakout', 'ADX rises from low; new trend.', ['breakout', 'trending_bull', 'trending_bear'], ['day', 'sniper'], 'Entry on ADX cross above 20 with price break.', 'Target prior structure.'),
+  ind('ind-atr-breakout', 'ATR Breakout', 'Price break with ATR expansion.', ['breakout', 'volatile'], ['scalping', 'day', 'sniper'], 'Entry on close beyond ATR multiple.', 'Stop 1 ATR; target 2 ATR.'),
+  ind('ind-atr-trail', 'ATR Trailing Stop', 'Trail stop at N × ATR.', R, S, 'Entry on structure; exit on ATR trail.', 'Adjust ATR period by timeframe.'),
+  ind('ind-obv-div', 'OBV Divergence', 'Price vs On-Balance Volume divergence.', ['reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on OBV divergence with price confirmation.', 'Target structure.'),
+  ind('ind-obv-breakout', 'OBV Breakout', 'OBV breaks trendline; volume confirmation.', ['breakout', 'trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry on OBV break with price.', 'Target prior level.'),
+  ind('ind-mfi', 'Money Flow Index', 'Volume-weighted RSI; overbought/oversold.', ['reversal_bull', 'reversal_bear', 'ranging'], S, 'Entry on MFI extreme and reversal.', 'Target 50 or structure.'),
+  ind('ind-cmf', 'Chaikin Money Flow', 'CMF positive/negative; accumulation/distribution.', ['trending_bull', 'trending_bear', 'reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on CMF zero cross with price.', 'Target prior extreme.'),
+  ind('ind-williams-r', 'Williams %R', 'Oscillator -80/-20; overbought/oversold.', ['reversal_bull', 'reversal_bear'], S, 'Entry on exit from extreme zone.', 'Target midpoint.'),
+  ind('ind-roc', 'Rate of Change (ROC)', 'Momentum oscillator; zero line cross.', ['trending_bull', 'trending_bear', 'reversal_bull', 'reversal_bear'], S, 'Entry on ROC cross with price.', 'Exit on opposite cross.'),
+  ind('ind-cmo', 'Chande Momentum Oscillator', 'CMO overbought/oversold; momentum.', ['reversal_bull', 'reversal_bear'], S, 'Entry on CMO extreme reversal.', 'Target zero.'),
+  ind('ind-tsi', 'True Strength Index', 'Double-smoothed momentum; zero line and divergence.', R, S, 'Entry on TSI cross or divergence.', 'Target opposite extreme.'),
+  ind('ind-ultimate-osc', 'Ultimate Oscillator', 'Multi-timeframe momentum; 30/70 levels.', ['reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on divergence or level cross.', 'Target 50.'),
+  ind('ind-kst', 'Know Sure Thing (KST)', 'Multi-ROC momentum; signal line cross.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry on KST cross of signal.', 'Exit on opposite cross.'),
+  ind('ind-pvo', 'Price Volume Oscillator', 'Volume momentum; histogram cross.', ['trending_bull', 'trending_bear', 'breakout'], ['day', 'swing'], 'Entry on PVO cross with price.', 'Target prior structure.'),
+  ind('ind-dpo', 'Detrended Price Oscillator', 'Price detrended; cycles and overbought/oversold.', ['ranging', 'reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on DPO extreme.', 'Target zero.'),
+  ind('ind-trix', 'TRIX', 'Triple EMA momentum; smooth oscillator.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry on TRIX cross of signal.', 'Exit on opposite cross.'),
+  ind('ind-keltner', 'Keltner Channel', 'EMA with ATR bands; breakout or mean reversion.', ['breakout', 'ranging', 'trending_bull', 'trending_bear'], S, 'Entry on channel touch or break.', 'Target opposite band.'),
+  ind('ind-donchian', 'Donchian Channel Breakout', 'Price breaks N-period high/low.', ['breakout', 'trending_bull', 'trending_bear'], S, 'Entry on break of channel.', 'Target opposite side or trail.'),
+  ind('ind-supertrend', 'Supertrend', 'ATR-based trend; flip for reversal.', ['trending_bull', 'trending_bear'], S, 'Entry on Supertrend flip.', 'Exit on opposite flip.'),
+  ind('ind-parabolic', 'Parabolic SAR', 'Trailing stop; trend reversal on flip.', ['trending_bull', 'trending_bear'], S, 'Entry on SAR flip with structure.', 'Exit on next flip.'),
+  ind('ind-ichimoku-cloud', 'Ichimoku Cloud', 'Cloud, TK cross, Chikou; multi-signal.', ['trending_bull', 'trending_bear', 'ranging'], ['day', 'medium_swing', 'swing', 'sniper'], 'Entry on TK cross above/below cloud.', 'Target Kijun or Chikou resistance.'),
+  ind('ind-ichimoku-chikou', 'Ichimoku Chikou Span', 'Chikou break of price; confirmation.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry when Chikou breaks price structure.', 'Target Kumo or swing.'),
+  ind('ind-pivot-points', 'Pivot Points', 'Classic Pivot R1 R2 S1 S2; support/resistance.', ['ranging', 'breakout'], ['scalping', 'day', 'sniper'], 'Entry at pivot level with confirmation.', 'Target next pivot.'),
+  ind('ind-camarilla', 'Camarilla Pivots', 'Tighter pivots; intraday.', ['ranging', 'breakout'], ['scalping', 'day'], 'Entry at Camarilla level.', 'Target next level.'),
+  ind('ind-fib-pivot', 'Fibonacci Pivot', 'Pivot with Fib levels.', ['ranging', 'trending_bull', 'trending_bear'], S, 'Entry at Fib pivot level.', 'Target next level.'),
+  ind('ind-zigzag', 'ZigZag Structure', 'Filtered swing highs/lows; structure levels.', R, S, 'Entry at ZigZag level with candle.', 'Target next ZigZag point.'),
+  ind('ind-fractals', 'Bill Williams Fractals', 'Five-bar reversal; breakout of fractal.', ['reversal_bull', 'reversal_bear', 'breakout'], ['scalping', 'day', 'sniper'], 'Entry on break of fractal high/low.', 'Target next fractal.'),
+  ind('ind-ao', 'Awesome Oscillator', 'MACD of median price; zero line cross.', ['trending_bull', 'trending_bear', 'reversal_bull', 'reversal_bear'], S, 'Entry on AO cross with price.', 'Target twin peak or zero.'),
+  ind('ind-ac', 'Accelerator Oscillator', 'AO derivative; momentum.', ['trending_bull', 'trending_bear'], S, 'Entry on AC cross.', 'Exit on opposite cross.'),
+  ind('ind-alligator', 'Alligator (Williams)', 'Three smoothed lines; sleep, wake, eat.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry when lines separate in direction.', 'Exit when lines cross.'),
+  ind('ind-gator', 'Gator Oscillator', 'Alligator jaw/lips difference; trend strength.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry when Gator expands.', 'Exit when Gator contracts.'),
+  ind('ind-force-index', 'Force Index', 'Volume × price change; breakout confirmation.', ['breakout', 'trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry on Force Index surge with price.', 'Target prior structure.'),
+  ind('ind-eom', 'Ease of Movement', 'Price move vs volume; low resistance moves.', ['trending_bull', 'trending_bear', 'breakout'], ['day'], 'Entry on EOM spike.', 'Target structure.'),
+  ind('ind-vpt', 'Volume Price Trend', 'Cumulative volume trend; divergence.', ['reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on VPT divergence.', 'Target structure.'),
+  ind('ind-nvi-pvi', 'NVI/PVI', 'Negative/Positive Volume Index; smart money.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry when NVI/PVI trends with price.', 'Target divergence.'),
+  ind('ind-vwap-anchor', 'Anchored VWAP', 'VWAP from event (e.g. swing low); key level.', ['trending_bull', 'trending_bear', 'ranging'], ['day', 'sniper'], 'Entry at anchored VWAP touch.', 'Target opposite or extension.'),
+  ind('ind-elder-impulse', 'Elder Impulse', 'EMA + MACD histogram; blue/green/red.', ['trending_bull', 'trending_bear'], S, 'Entry on color change with structure.', 'Exit on opposite color.'),
+  ind('ind-coppock', 'Coppock Curve', 'Long-term momentum; bottom fishing.', ['reversal_bull', 'trending_bear'], ['swing'], 'Entry on Coppock turn up from negative.', 'Target prior high.'),
+  ind('ind-swing-index', 'Swing Index', 'Single-candle momentum; gap and range.', ['breakout', 'volatile'], ['scalping', 'day'], 'Entry on Swing Index extreme.', 'Target reversal.'),
+  ind('ind-accumulation', 'Accumulation/Distribution', 'Close relative to range; cumulative.', ['trending_bull', 'trending_bear', 'reversal_bull', 'reversal_bear'], ['day', 'swing'], 'Entry on A/D divergence or trend.', 'Target structure.'),
+];

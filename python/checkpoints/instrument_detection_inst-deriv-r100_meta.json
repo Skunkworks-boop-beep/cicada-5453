@@ -1,0 +1,12 @@
+{
+  "instrument_id": "inst-deriv-r100",
+  "strategy_id": "cs-pin-bar-bear",
+  "strategy_params": {
+    "bodyPct": 0.0779,
+    "wickPct": 0.6
+  },
+  "timeframe": "H4",
+  "bar_window": 90,
+  "bar_feature_dim": 360,
+  "num_samples": 2100
+}

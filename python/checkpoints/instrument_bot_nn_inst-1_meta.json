@@ -1,0 +1,25 @@
+{
+  "instrument_id": "inst-1",
+  "trained_at_iso": "2026-03-11T12:40:23.161022+00:00",
+  "data_end_min": "2024-01-01",
+  "data_end_max": "2024-01-03",
+  "num_rows": 3,
+  "from_scratch": true,
+  "strategy_feature_dim": 32,
+  "strategy_id_to_idx": {
+    "cp-fib-retracement": 0,
+    "ind-rsi-oversold": 1
+  },
+  "strategy_ids": [
+    "cp-fib-retracement",
+    "ind-rsi-oversold"
+  ],
+  "timeframe_to_idx": {
+    "H1": 0,
+    "M5": 1
+  },
+  "regime_to_idx": {
+    "ranging": 0,
+    "trending_bull": 1
+  }
+}

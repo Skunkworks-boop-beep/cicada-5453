@@ -1,0 +1,56 @@
+{
+  "instrument_id": "inst-eurusd",
+  "trained_at_iso": "2026-03-22T10:21:03.318462+00:00",
+  "data_end_min": "2026-03-20T00:00:00.000Z",
+  "data_end_max": "2026-03-20T20:55:00.000Z",
+  "num_rows": 201,
+  "from_scratch": true,
+  "strategy_feature_dim": 188,
+  "strategy_id_to_idx": {
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=12.0|lookback=10.0|rsiPeriod=14.0": 0,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=189.0|lookback=10.0|rsiPeriod=14.0": 1,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=10.0|rsiPeriod=14.0": 2,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=144.0|rsiPeriod=14.0": 3,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=286.0|rsiPeriod=14.0": 4,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=428.0|rsiPeriod=14.0": 5,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=570.0|rsiPeriod=14.0": 6,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=711.0|rsiPeriod=14.0": 7,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=367.0|lookback=10.0|rsiPeriod=14.0": 8,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=543.0|lookback=10.0|rsiPeriod=14.0": 9,
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=720.0|lookback=10.0|rsiPeriod=14.0": 10
+  },
+  "strategy_ids": [
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=12.0|lookback=10.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=189.0|lookback=10.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=10.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=144.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=286.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=428.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=570.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=20.0|lookback=711.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=367.0|lookback=10.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=543.0|lookback=10.0|rsiPeriod=14.0",
+    "cp-double-top|atrPeriod=14.0|bbPeriod=20.0|donchianPeriod=720.0|lookback=10.0|rsiPeriod=14.0"
+  ],
+  "timeframe_to_idx": {
+    "D1": 0,
+    "H1": 1,
+    "H4": 2,
+    "M1": 3,
+    "M15": 4,
+    "M30": 5,
+    "M5": 6,
+    "W1": 7
+  },
+  "regime_to_idx": {
+    "any": 0,
+    "breakout": 1,
+    "consolidation": 2,
+    "ranging": 3,
+    "reversal_bear": 4,
+    "reversal_bull": 5,
+    "trending_bear": 6,
+    "trending_bull": 7,
+    "unknown": 8
+  }
+}
