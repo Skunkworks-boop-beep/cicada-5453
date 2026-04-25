@@ -25,7 +25,62 @@ from .grid_config import (
     DEFAULT_RESEARCH_PARAM_TUNE_MAX_STRAT,
     DEFAULT_RESEARCH_REGIME_GRID_MAX,
 )
+from .job_manager import JOB_MANAGER
 from .strategy_params import get_param_combinations
+
+
+# ── Regime-series cache ─────────────────────────────────────────────────────
+# detect_regime_series re-walks the same bar slice for every config in the
+# regime grid (up to 600 000 cells). Caching by (bars id, lookback, threshold
+# tuple) cuts that to a single computation per unique config × bar slice.
+# We use a small bounded LRU so memory usage stays predictable on long runs.
+
+import functools
+from collections import OrderedDict
+
+
+class _RegimeSeriesCache:
+    def __init__(self, capacity: int = 256):
+        self._capacity = capacity
+        self._store: "OrderedDict[tuple, list[str]]" = OrderedDict()
+
+    def get(self, key: tuple) -> "list[str] | None":
+        if key in self._store:
+            self._store.move_to_end(key)
+            return self._store[key]
+        return None
+
+    def put(self, key: tuple, value: list[str]) -> None:
+        self._store[key] = value
+        self._store.move_to_end(key)
+        while len(self._store) > self._capacity:
+            self._store.popitem(last=False)
+
+
+_REGIME_CACHE = _RegimeSeriesCache()
+
+
+def _cached_regime_series(bars: list[dict], cfg: RegimeConfig) -> list[str]:
+    """Wrap ``detect_regime_series`` with a cache keyed on bars identity + cfg.
+    Two callers using the same bar list and the same config get the same
+    pre-computed series — turning the regime grid sweep into a hot path."""
+    key = (
+        id(bars),
+        len(bars),
+        cfg.lookback,
+        round(cfg.trend_threshold, 8),
+        round(cfg.volatility_high, 6),
+        round(cfg.volatility_low, 6),
+        round(cfg.donchian_boundary_frac, 6),
+        round(cfg.rsi_overbought, 4),
+        round(cfg.rsi_oversold, 4),
+    )
+    cached = _REGIME_CACHE.get(key)
+    if cached is not None:
+        return cached
+    series = detect_regime_series(bars, config=cfg)
+    _REGIME_CACHE.put(key, series)
+    return series
 
 # Trade scopes for per-mode grid iteration (scalp/day/swing/position)
 ALL_SCOPES: list[str] = ["scalp", "day", "swing", "position"]
@@ -44,6 +99,18 @@ MAX_REGIME_CONFIGS = int(os.environ.get("CICADA_RESEARCH_MAX_REGIME_CONFIGS", "6
 MAX_RISK_CONFIGS = int(os.environ.get("CICADA_RESEARCH_MAX_RISK_CONFIGS", "600000"))
 MIN_OOS_TRADES = int(os.environ.get("CICADA_RESEARCH_MIN_OOS_TRADES", "5"))
 WALK_FORWARD_SPLITS = int(os.environ.get("CICADA_RESEARCH_WALK_FORWARD_SPLITS", "5"))
+
+# Robust mode boosts the strategy-param search budget so we explore more of
+# the grid. The previous magic ``max(3 * DEFAULTS, request * 2)`` was opaque;
+# now it's a named constant that makes the intent obvious.
+ROBUST_PARAM_TUNE_FLOOR_MULT = 3   # at least 3× the default param-tune budget
+ROBUST_PARAM_TUNE_REQUEST_MULT = 2  # always at least 2× whatever the request asked for
+
+
+def robust_param_tune_max_strat(requested: int | None) -> int:
+    floor = ROBUST_PARAM_TUNE_FLOOR_MULT * DEFAULT_RESEARCH_PARAM_TUNE_MAX_STRAT
+    requested_doubled = (requested or DEFAULT_RESEARCH_PARAM_TUNE_MAX_STRAT) * ROBUST_PARAM_TUNE_REQUEST_MULT
+    return max(floor, requested_doubled)
 
 
 # Regime calibration grid (forex). 27^4 ≈ 531k combos.
@@ -335,7 +402,7 @@ def run_regime_calibration(
             volatility_low=float(cfg_dict.get("volatility_low", 0.004)),
             donchian_boundary_frac=float(cfg_dict.get("donchian_boundary_frac", 0.998)),
         )
-        series = detect_regime_series(bars, config=rc)
+        series = _cached_regime_series(bars, rc)
         entropy = _regime_entropy(series)
         unknown_ratio = _regime_unknown_ratio(series)
         # Score: entropy * (1 - unknown_ratio) — favor diverse regimes with few unknowns
@@ -438,7 +505,7 @@ def _run_regime_calibration_with_progress(
             volatility_low=float(cfg_dict.get("volatility_low", 0.004)),
             donchian_boundary_frac=float(cfg_dict.get("donchian_boundary_frac", 0.998)),
         )
-        series = detect_regime_series(bars, config=rc)
+        series = _cached_regime_series(bars, rc)
         entropy = _regime_entropy(series)
         unknown_ratio = _regime_unknown_ratio(series)
         score = entropy * (1.0 - unknown_ratio)
@@ -768,21 +835,33 @@ def run_param_tune_robust(
     n = len(bars)
     wf_results: list[dict[str, Any]] = []
 
+    # Walk-forward splits using anchored expanding windows. Each split adds a
+    # block of fresh bars to the train slice, then validates on the next 20%
+    # of the series and tests on the 20% after that. This is the standard
+    # anchored walk-forward used in financial ML; the previous "rotate
+    # modulo n" formulation produced overlapping windows and frequently
+    # collapsed to ``(0, n*0.2)`` after the first split — destroying the
+    # rotation entirely.
+    if walk_forward_splits < 1:
+        walk_forward_splits = 1
+    block = max(1, n // (walk_forward_splits + 4))  # smaller block ⇒ more granular shifts
+
     for split_idx in range(walk_forward_splits):
-        logger.debug("param_tune_robust split=%d/%d instrument=%s strategy=%s regime=%s", split_idx + 1, walk_forward_splits, instrument_id, strategy_id, regime)
-        # Walk-forward: train on 60%, validate on 20%, test on 20%
-        train_end = int(n * 0.6)
-        val_end = int(n * 0.8)
-        if split_idx > 0:
-            # Rotate: shift the window
-            shift = (split_idx * (n // walk_forward_splits)) % n
-            train_end = (train_end + shift) % n
-            val_end = (val_end + shift) % n
-            if train_end > val_end:
-                train_end, val_end = 0, int(n * 0.2)
+        logger.debug(
+            "param_tune_robust split=%d/%d instrument=%s strategy=%s regime=%s",
+            split_idx + 1, walk_forward_splits, instrument_id, strategy_id, regime,
+        )
+        train_end = int(n * 0.4) + split_idx * block
+        val_end = train_end + max(int(n * 0.2), block)
+        test_end = val_end + max(int(n * 0.2), block)
+        if test_end > n:
+            # Last split runs only when the test slice still fits inside the
+            # data. Rather than wrapping (which leaks future into past), we
+            # stop early once we've exhausted the series.
+            break
         bars_train = bars[:train_end]
         bars_val = bars[train_end:val_end]
-        bars_test = bars[val_end:]
+        bars_test = bars[val_end:test_end]
 
         if len(bars_train) < 50 or len(bars_val) < 30:
             continue
@@ -848,12 +927,43 @@ def run_param_tune_robust(
             min_trades_oos=min_trades_oos, rank_by_oos_profit=True,
         )
 
-    # Pick config that is profitable in most splits, else highest avg OOS profit
+    # Pick the best config across walk-forward splits.
+    #
+    # The previous implementation had two identical max() branches, so the
+    # "consistency-first" path silently fell back to "highest single OOS"
+    # — exactly the overfitting trap walk-forward was meant to avoid.
+    #
+    # Now we honour two distinct selection rules:
+    #   1) When at least half the splits are profitable, choose the config
+    #      with the highest *median* OOS profit (consistency wins over single
+    #      lucky split).
+    #   2) Otherwise, fall back to the highest single-split OOS profit but
+    #      penalise trade scarcity by requiring tradesOOS >= min_trades_oos
+    #      when any candidate clears that bar.
     profitable_count = sum(1 for r in wf_results if r["profitOOS"] > 0)
-    if profitable_count >= walk_forward_splits // 2:
-        best = max(wf_results, key=lambda r: (r["profitOOS"], r["tradesOOS"]))
+    if profitable_count >= max(1, walk_forward_splits // 2):
+        # Group by (strategyParams, riskParams) hash so we compare like splits.
+        from statistics import median
+
+        # Each wf entry is one tune; multiple entries are different splits with
+        # potentially the same chosen config. Group by their (params, risk) key.
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for r in wf_results:
+            key = f"{r.get('strategyParams', {})}|{r.get('riskParams', {})}"
+            groups.setdefault(key, []).append(r)
+        best_key = max(
+            groups,
+            key=lambda k: (
+                median(r["profitOOS"] for r in groups[k]),
+                median(r["tradesOOS"] for r in groups[k]),
+            ),
+        )
+        # Return a representative entry from the winning group.
+        best = max(groups[best_key], key=lambda r: r["profitOOS"])
     else:
-        best = max(wf_results, key=lambda r: (r["profitOOS"], r["tradesOOS"]))
+        with_trades = [r for r in wf_results if (r.get("tradesOOS") or 0) >= min_trades_oos]
+        pool = with_trades if with_trades else wf_results
+        best = max(pool, key=lambda r: (r["profitOOS"], r["tradesOOS"]))
     logger.info(
         "param_tune_robust best instrument=%s strategy=%s regime=%s oos_profit=%.2f trades_oos=%d splits_used=%d",
         instrument_id, strategy_id, regime, best["profitOOS"], best["tradesOOS"], len(wf_results),
@@ -913,7 +1023,7 @@ def run_grid_research(
             mt5_sym = symbol.replace("/", "").strip().upper()
             for tf in (timeframes or ["M5"]):
                 ohlc_try = mt5_client.get_rates(
-                    mt5_sym, tf, count=10_000,
+                    mt5_sym, tf, count=50_000,  # full-history; matches BACKTEST_FULL_HISTORY_BARS on FE
                     date_from=date_from or None, date_to=date_to or None,
                 )
                 if ohlc_try and len(ohlc_try) >= 200:
@@ -969,9 +1079,23 @@ def run_grid_research(
             regime_tunes.append(regime_result)
             rc = RegimeConfig.from_dict(regime_result["regimeConfig"])
 
+            # Calibration hints from backward-validation may also carry per-
+            # strategy seeds. Use them for param-tune so the prior knowledge
+            # is honoured by both phases, not just regime calibration.
+            param_seeds: dict[str, list[dict[str, float]]] = {}
+            for sk, sv in (hint.get("strategySeeds") or {}).items():
+                if isinstance(sv, dict):
+                    param_seeds[sk] = [sv]
+                elif isinstance(sv, list):
+                    param_seeds[sk] = [s for s in sv if isinstance(s, dict)]
+
             for strategy_id in strategy_ids:
                 name = (strategy_names or {}).get(strategy_id) or strategy_id
                 param_combos = get_param_combinations(strategy_id, max_combinations=param_tune_max_strat)
+                seeded = param_seeds.get(strategy_id) or []
+                # Prepend seeded combos so they're evaluated even when grid
+                # subsampling later trims the param list.
+                final_combos = [*seeded, *param_combos] if param_combos else (seeded or [None])
                 for regime in regimes:
                     if regime == "any":
                         continue
@@ -979,7 +1103,7 @@ def run_grid_research(
                         inst_id, symbol, strategy_id, name,
                         tf, regime, ohlc,
                         regime_config=rc,
-                        strategy_params_list=param_combos if param_combos else [None],
+                        strategy_params_list=final_combos,
                         risk_grid=RISK_GRID,
                         spread_pct=spread_pct,
                         max_risk_configs=param_tune_max_risk,
@@ -1018,6 +1142,7 @@ def run_grid_research_with_progress(
     date_to: str = "",
     robust_mode: bool = False,
     calibration_hints: dict[str, dict[str, Any]] | None = None,
+    job_id: str | None = None,
 ):
     """
     Same as run_grid_research but yields progress dicts before the final result.
@@ -1027,6 +1152,18 @@ def run_grid_research_with_progress(
     """
     from . import mt5_client
     from .backtest_server import _normalize_bars, _spread_points_to_fraction
+
+    # Validate the bars dict against instrument ids: typos caused silent skips
+    # in the previous version. We log a warning per missing instrument so the
+    # caller can fix the payload.
+    expected_keys = {f"{i}|{tf}" for i in instrument_ids for tf in (timeframes or [])}
+    bar_keys = set((bars or {}).keys())
+    unknown = bar_keys - expected_keys
+    if unknown:
+        logger.warning(
+            "research bars contain %d unknown key(s) (typos?): %s",
+            len(unknown), sorted(unknown)[:10],
+        )
 
     regimes = regimes or ["trending_bull", "trending_bear", "ranging", "volatile", "breakout"]
     spreads = instrument_spreads or {}
@@ -1121,6 +1258,12 @@ def run_grid_research_with_progress(
         }
 
     for idx, (inst_id, tf) in enumerate(tf_pairs):
+        # Honour the cooperative cancel token from JOB_MANAGER before starting
+        # each instrument×TF block. The previous version only checked between
+        # outer yields, so a cancel mid-regime-grid had to wait minutes.
+        if job_id and JOB_MANAGER.should_cancel(job_id):
+            yield {"type": "cancelled", "phase": "regime", "message": "Cancelled by client", **_progress_payload(actual_completed)}
+            return
         symbol = (instrument_symbols or {}).get(inst_id) or inst_id.replace("inst-", "").replace("-", "").upper()
         if not symbol:
             total_steps -= 1 + baseline_runs_per_inst + param_jobs_per_inst
@@ -1133,7 +1276,7 @@ def run_grid_research_with_progress(
             ohlc = mt5_client.get_rates(
                 mt5_sym,
                 tf,
-                count=10_000,
+                count=50_000,  # full-history; matches BACKTEST_FULL_HISTORY_BARS on FE
                 date_from=date_from or None,
                 date_to=date_to or None,
             )
@@ -1272,11 +1415,17 @@ def run_grid_research_with_progress(
         rc = RegimeConfig.from_dict(regime_result["regimeConfig"])
 
         for strategy_id in strategy_ids:
+            if job_id and JOB_MANAGER.should_cancel(job_id):
+                yield {"type": "cancelled", "phase": "param", "message": "Cancelled by client", **_progress_payload(actual_completed)}
+                return
             name = (strategy_names or {}).get(strategy_id) or strategy_id
             param_combos = get_param_combinations(strategy_id, max_combinations=param_tune_max_strat)
             for regime in regimes:
                 if regime == "any":
                     continue
+                if job_id and JOB_MANAGER.should_cancel(job_id):
+                    yield {"type": "cancelled", "phase": "param", "message": "Cancelled by client", **_progress_payload(actual_completed)}
+                    return
                 done_param += 1
                 yield {
                     "type": "progress",
@@ -1304,10 +1453,7 @@ def run_grid_research_with_progress(
                             strategy_params_list=param_combos if param_combos else [None],
                             spread_pct=spread_pct,
                             max_risk_configs=_max_risk,
-                            max_param_configs=max(
-                                3 * DEFAULT_RESEARCH_PARAM_TUNE_MAX_STRAT,
-                                (param_tune_max_strat or DEFAULT_RESEARCH_PARAM_TUNE_MAX_STRAT) * 2,
-                            ),
+                            max_param_configs=robust_param_tune_max_strat(param_tune_max_strat),
                             min_trades_oos=MIN_OOS_TRADES,
                             walk_forward_splits=WALK_FORWARD_SPLITS,
                             use_successive_halving=True,

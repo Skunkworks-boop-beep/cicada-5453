@@ -740,3 +740,175 @@ def get_cs_signal(
     if fn is not None:
         return fn(bars, i, params)
     return fallback_fn(bars, i)
+
+
+# ── Patterns previously routed through the generic fallback ─────────────────
+# Ported from src/app/core/candlestickSignals.ts so backend parity matches the
+# 12 remaining cs- ids that were marked "unmapped" by the coverage audit.
+
+
+def _signal_spinning_top_bull(bars: list[dict], i: int, params: dict | None) -> int:
+    cur = bars[i]
+    wp = _p(params, "wickPct", 0.4)
+    if _body_pct(cur) < 0.3 and _lower_wick_pct(cur) >= wp and _upper_wick_pct(cur) >= wp:
+        return 1
+    return 0
+
+
+def _signal_spinning_top_bear(bars: list[dict], i: int, params: dict | None) -> int:
+    cur = bars[i]
+    wp = _p(params, "wickPct", 0.4)
+    if _body_pct(cur) < 0.3 and _lower_wick_pct(cur) >= wp and _upper_wick_pct(cur) >= wp:
+        return -1
+    return 0
+
+
+def _signal_high_wave(bars: list[dict], i: int, params: dict | None) -> int:
+    # FE returns 0 — high-wave is a *warning* candle, not a directional one.
+    cur = bars[i]
+    wp = _p(params, "wickPct", 0.4)
+    _ = (cur, wp)
+    return 0
+
+
+def _signal_two_crows(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 2:
+        return 0
+    c1, c2, c3 = bars[i - 2], bars[i - 1], bars[i]
+    if not (_is_bullish(c1) and _is_bearish(c2) and _is_bearish(c3)):
+        return 0
+    if _gap_up(c1, c2) and c2["open"] > c1["close"] and c3["open"] > c2["open"] and c3["open"] < c2["close"]:
+        return -1
+    return 0
+
+
+def _signal_deliberation(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 2:
+        return 0
+    c1, c2, c3 = bars[i - 2], bars[i - 1], bars[i]
+    bp = _p(params, "bodyPct", 0.1)
+    if not (_is_bullish(c1) and _is_bullish(c2)):
+        return 0
+    b1 = abs(c1["close"] - c1["open"])
+    b2 = abs(c2["close"] - c2["open"])
+    if b2 >= b1 * 0.5:
+        return 0
+    if _is_doji(c3, bp * 1.5) or _body_pct(c3) < 0.2:
+        return -1
+    return 0
+
+
+def _signal_mat_hold(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 5:
+        return 0
+    prev = bars[i - 5]
+    c1, c2, c3, c4, c5 = bars[i - 4], bars[i - 3], bars[i - 2], bars[i - 1], bars[i]
+    if not _is_bullish(c1) or (prev and not _gap_up(prev, c1)):
+        return 0
+    if not (_is_bearish(c2) and _is_bearish(c3) and _is_bearish(c4)):
+        return 0
+    if _is_bullish(c5) and c5["close"] > c1["high"]:
+        return 1
+    return 0
+
+
+def _signal_breakaway_bull(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 4:
+        return 0
+    first = bars[i - 4]
+    prev = bars[i - 5] if i >= 5 else first
+    if not _is_bearish(first) or not _gap_down(prev, first):
+        return 0
+    c2, c3, c4, c5 = bars[i - 3], bars[i - 2], bars[i - 1], bars[i]
+    if not (_is_bullish(c2) and _is_bullish(c3) and _is_bullish(c4) and _is_bullish(c5)):
+        return 0
+    if _gap_up(c4, c5) and c5["close"] > first["high"]:
+        return 1
+    return 0
+
+
+def _signal_breakaway_bear(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 4:
+        return 0
+    first = bars[i - 4]
+    prev = bars[i - 5] if i >= 5 else first
+    if not _is_bullish(first) or not _gap_up(prev, first):
+        return 0
+    c2, c3, c4, c5 = bars[i - 3], bars[i - 2], bars[i - 1], bars[i]
+    if not (_is_bearish(c2) and _is_bearish(c3) and _is_bearish(c4) and _is_bearish(c5)):
+        return 0
+    if _gap_down(c4, c5) and c5["close"] < first["low"]:
+        return -1
+    return 0
+
+
+def _signal_concealing_baby(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 4:
+        return 0
+    c1, c2, c3, c4 = bars[i - 4], bars[i - 3], bars[i - 2], bars[i - 1]
+    confirm = bars[i]
+    if not (_is_bearish(c1) and _is_bearish(c2) and _is_bearish(c3) and _is_bearish(c4)):
+        return 0
+    if c4["open"] < c3["open"] or c4["open"] > c3["close"]:
+        return 0
+    if _is_bullish(confirm) and confirm["close"] > c1["high"]:
+        return 1
+    return 0
+
+
+def _signal_unique_three_river(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 2:
+        return 0
+    first, second, third = bars[i - 2], bars[i - 1], bars[i]
+    if not _is_bearish(first):
+        return 0
+    if not (_lower_wick_pct(second) >= 0.6 and _body_pct(second) <= 0.3):
+        return 0
+    if not _is_bullish(third):
+        return 0
+    if third["open"] > second["low"] and third["close"] < second["open"] and third["close"] > first["close"]:
+        return 1
+    return 0
+
+
+def _signal_two_rabbits(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 2:
+        return 0
+    first, second, third = bars[i - 2], bars[i - 1], bars[i]
+    prev = bars[i - 3] if i >= 3 else first
+    if not _is_bearish(first) or not _gap_down(prev, first):
+        return 0
+    if not (_is_bullish(second) and _is_bullish(third)):
+        return 0
+    if third["open"] >= second["open"] and third["open"] <= second["close"] and third["close"] > first["high"]:
+        return 1
+    return 0
+
+
+def _signal_three_river_bull(bars: list[dict], i: int, params: dict | None) -> int:
+    if i < 2:
+        return 0
+    first, second, third = bars[i - 2], bars[i - 1], bars[i]
+    bp = _p(params, "bodyPct", 0.1)
+    if not (_is_bearish(first) and _is_doji(second, bp) and _is_bullish(third)):
+        return 0
+    if first["low"] != 0 and abs(second["low"] - first["low"]) / abs(first["low"]) < 0.01 and third["close"] > first["high"]:
+        return 1
+    return 0
+
+
+# Register the new handlers so they take precedence over the generic fallback.
+CS_PATTERN_MAP.update({
+    "cs-spinning-top-bull": _signal_spinning_top_bull,
+    "cs-spinning-top-bear": _signal_spinning_top_bear,
+    "cs-high-wave": _signal_high_wave,
+    "cs-two-crows": _signal_two_crows,
+    "cs-deliberation": _signal_deliberation,
+    "cs-mat-hold": _signal_mat_hold,
+    "cs-breakaway-bull": _signal_breakaway_bull,
+    "cs-breakaway-bear": _signal_breakaway_bear,
+    "cs-concealing-baby": _signal_concealing_baby,
+    "cs-unique-three-river": _signal_unique_three_river,
+    "cs-two-rabbits": _signal_two_rabbits,
+    "cs-three-river-bull": _signal_three_river_bull,
+})

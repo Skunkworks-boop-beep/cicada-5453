@@ -10,7 +10,16 @@
  * 1. Balance at entry — account-level return (profit / balance_at_entry)
  * 2. Stake — for tick/binary contracts (profit / stake)
  * 3. Entry value — for CFD/forex (entry_price × size)
+ *
+ * Gross vs net:
+ * Live PnL used to be calculated as just `(exitPrice - entryPrice) * size`,
+ * which ignores commission, swap, and slippage. Backtest charges all three
+ * (via `transactionCosts.ts`), so backtest-vs-live comparison drifted over
+ * time. The cost-aware helpers below apply the same schedule to live trades.
  */
+
+import type { InstrumentType, Timeframe } from './types';
+import { commissionCharge, fillSlippagePct, swapAccrual } from './transactionCosts';
 
 /** Detect tick contracts (Deriv R_10, R_25, etc.) by instrumentId or symbol. */
 export function isTickContractInstrument(instrumentId: string, symbol?: string): boolean {
@@ -82,4 +91,101 @@ export function computeClosedTradePnl(input: PnlNotionalInput): { notional: numb
   const notional = computePnlNotional(input);
   const pnlPercent = computePnlPercent(input.profit, notional);
   return { notional, pnlPercent };
+}
+
+export interface CostBreakdown {
+  /** Commission charged at round-trip close. Always >= 0. */
+  commission: number;
+  /** Swap / funding accrual over hold period. Negative when holding cost. */
+  swap: number;
+  /** Slippage cost applied on the exit (approx. |entry × slippage_pct|). */
+  slippage: number;
+  /** Sum of all deductions (positive number to deduct from gross). */
+  total: number;
+}
+
+export interface LiveTradeCostInput {
+  type: 'LONG' | 'SHORT';
+  size: number;
+  entryPrice: number;
+  exitPrice: number;
+  holdBars: number;
+  timeframe: Timeframe;
+  instrumentType: InstrumentType;
+  /** 'signal' | 'max_hold' for market exits; 'stop' | 'target' for barrier fills. */
+  exitReason?: 'signal' | 'stop' | 'target' | 'max_hold';
+  /** Optional override base slippage fraction; falls back to per-type defaults. */
+  baseSlippagePct?: number;
+}
+
+/**
+ * Compute the three live-trade cost components consistently with the backtest.
+ * Returns costs as positive deductions — the caller subtracts them from gross.
+ */
+export function computeLiveTradeCosts(input: LiveTradeCostInput): CostBreakdown {
+  const side = input.type === 'LONG' ? 1 : -1;
+  const notional = Math.abs(input.entryPrice * input.size);
+  const commission = commissionCharge(notional, input.instrumentType);
+  const swap = swapAccrual(
+    notional,
+    input.instrumentType,
+    Math.max(0, Math.round(input.holdBars)),
+    input.timeframe,
+    side as 1 | -1
+  );
+  const slipPct = fillSlippagePct(
+    input.baseSlippagePct ?? 5e-5,
+    input.instrumentType,
+    input.exitReason ?? 'signal'
+  );
+  // Slippage is modelled on entry price × size, mirroring the backtest engine
+  // so backtest-vs-live comparisons align.
+  const slippage = Math.max(0, input.entryPrice * slipPct * input.size);
+  return {
+    commission,
+    swap: -Math.abs(Math.min(0, swap)) + Math.max(0, swap), // keep sign (neg = cost)
+    slippage,
+    total: commission + slippage + (swap < 0 ? -swap : 0),
+  };
+}
+
+export interface NetLivePnl {
+  /** PnL before any costs ((exit - entry) * size with side). */
+  grossPnl: number;
+  /** PnL after commission, slippage, and swap. */
+  netPnl: number;
+  /** Detailed breakdown. */
+  costs: CostBreakdown;
+  /** Net PnL as a fraction of the chosen notional basis (balance at entry preferred). */
+  pnlPercent: number;
+  /** The basis used for pnlPercent. */
+  notional: number;
+}
+
+/**
+ * Live-trade PnL that matches the backtest cost model. The ``notional`` basis
+ * is computed with the same ``computePnlNotional`` rules so the percentage is
+ * consistent across instruments (balance-at-entry → stake → entry value).
+ */
+export function computeNetLivePnl(
+  costInput: LiveTradeCostInput,
+  notionalInput?: Partial<PnlNotionalInput>
+): NetLivePnl {
+  const side = costInput.type === 'LONG' ? 1 : -1;
+  const grossPnl = (costInput.exitPrice - costInput.entryPrice) * costInput.size * side;
+  const costs = computeLiveTradeCosts(costInput);
+  const netPnl = grossPnl - costs.total;
+  const notional = computePnlNotional({
+    profit: netPnl,
+    entryPrice: costInput.entryPrice,
+    size: costInput.size,
+    ...(notionalInput ?? {}),
+  });
+  return {
+    grossPnl,
+    netPnl,
+    costs,
+    notional,
+    pnlPercent: computePnlPercent(netPnl, notional),
+  };
 }

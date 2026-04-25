@@ -3,9 +3,46 @@
  * Mitigates edge cases: duplicate detection, audit trail, recovery from crash.
  */
 
-export type TradeLogEvent = 
-  | { kind: 'trade_open'; positionId: string; brokerKey?: string; instrumentId: string; symbol: string; type: 'LONG' | 'SHORT'; size: number; entryPrice: number; botId: string; scope: string; timestamp: string }
-  | { kind: 'trade_close'; positionId: string; brokerKey?: string; instrumentId: string; symbol: string; type?: 'LONG' | 'SHORT'; entryPrice: number; exitPrice?: number; pnl: number; pnlPercent: number; botId: string; timestamp: string };
+export type TradeLogEvent =
+  | {
+      kind: 'trade_open';
+      positionId: string;
+      brokerKey?: string;
+      instrumentId: string;
+      symbol: string;
+      type: 'LONG' | 'SHORT';
+      size: number;
+      entryPrice: number;
+      botId: string;
+      scope: string;
+      timestamp: string;
+    }
+  | {
+      kind: 'trade_close';
+      positionId: string;
+      brokerKey?: string;
+      instrumentId: string;
+      symbol: string;
+      type?: 'LONG' | 'SHORT';
+      entryPrice: number;
+      exitPrice?: number;
+      pnl: number;                 // net P/L (after commission + slippage + swap)
+      pnlPercent: number;
+      /** Gross P/L before costs; used by the trade log to surface cost impact. */
+      grossPnl?: number;
+      /** Round-trip commission charged on close. Positive = cost. */
+      commission?: number;
+      /** Swap accrual over hold period. Negative = holding cost. */
+      swap?: number;
+      /** Slippage cost on this fill. */
+      slippage?: number;
+      /** Hold length in bars (bot's primary timeframe). */
+      holdBars?: number;
+      /** Why the position exited: signal / stop / target / max_hold / broker / manual. */
+      exitReason?: 'signal' | 'stop' | 'target' | 'max_hold' | 'broker' | 'manual';
+      botId: string;
+      timestamp: string;
+    };
 
 const TRADE_LOG_MAX = 500;
 let inMemoryTradeLog: Array<TradeLogEvent & { loggedAt: string }> = [];
@@ -47,12 +84,21 @@ export function tradeEventToExecutionLog(event: TradeLogEvent): { botId: string;
     };
   }
   const isDeriv = /inst-deriv/.test(event.instrumentId) || /^R_/.test(event.symbol ?? '');
+  const costTotal =
+    (event.commission ?? 0) +
+    (event.slippage ?? 0) +
+    (event.swap != null && event.swap < 0 ? -event.swap : 0);
+  const msg = isDeriv
+    ? 'Closed'
+    : costTotal > 0 && event.grossPnl != null
+      ? `Closed net $${event.pnl.toFixed(2)} (gross $${event.grossPnl.toFixed(2)}, costs $${costTotal.toFixed(2)}) — ${event.pnlPercent.toFixed(2)}%`
+      : `Closed P/L $${event.pnl.toFixed(2)} (${event.pnlPercent.toFixed(2)}%)`;
   return {
     botId: event.botId,
     symbol: event.symbol,
     phase: 'trade_close',
     outcome: 'success',
-    message: isDeriv ? 'Closed' : `Closed P/L $${event.pnl.toFixed(2)} (${event.pnlPercent.toFixed(2)}%)`,
+    message: msg,
     details: {
       positionId: event.positionId,
       brokerKey: event.brokerKey,
@@ -61,6 +107,12 @@ export function tradeEventToExecutionLog(event: TradeLogEvent): { botId: string;
       entryPrice: event.entryPrice,
       ...(event.exitPrice != null && { exitPrice: event.exitPrice }),
       ...(!isDeriv && { pnl: event.pnl, pnlPercent: event.pnlPercent }),
+      ...(event.grossPnl != null && { grossPnl: event.grossPnl }),
+      ...(event.commission != null && { commission: event.commission }),
+      ...(event.swap != null && { swap: event.swap }),
+      ...(event.slippage != null && { slippage: event.slippage }),
+      ...(event.holdBars != null && { holdBars: event.holdBars }),
+      ...(event.exitReason != null && { exitReason: event.exitReason }),
       timestamp: event.timestamp,
     },
   };

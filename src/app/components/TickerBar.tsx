@@ -24,8 +24,23 @@ export function TickerBar() {
   const exnessApiConnected = state.brokers.some((b) => b.type === 'exness_api' && b.status === 'connected');
   const hasConnection = derivConnected || mt5Connected || exnessApiConnected;
 
+  // Old behaviour fetched the first 5 registry instruments by index even when
+  // the user wasn't trading them — burned the broker rate limit fast. Now we
+  // only ticker instruments the user is actually using:
+  //   - explicitly marked "selected" in the dashboard, OR
+  //   - active + has an existing position, OR
+  //   - active + has a deployed bot
+  // Worst case: still capped at 8 symbols so a heavy account doesn't hammer.
+  const inUseInstrumentIds = new Set<string>();
+  for (const p of state.portfolio.positions) inUseInstrumentIds.add(p.instrumentId);
+  for (const b of state.bots) {
+    if (b.status === 'deployed' && b.instrumentId) inUseInstrumentIds.add(b.instrumentId);
+  }
   const symbols = state.instruments
-    .filter((i) => i.selected || state.instruments.indexOf(i) < 5)
+    .filter(
+      (i) =>
+        i.status === 'active' && (i.selected || inUseInstrumentIds.has(i.id))
+    )
     .slice(0, 8)
     .map((i) => (i.symbol ?? i.id.replace(/^inst-/, '').toUpperCase().replace(/-/g, '/')).replace('/', ''))
     .filter(Boolean);

@@ -279,7 +279,7 @@ export function BacktestEngine() {
             onClick={() => setRobustMode((b) => !b)}
             disabled={isRunning || research?.status === 'running'}
             title={robustMode ? 'Robust mode ON: OOS profit, walk-forward, successive halving' : 'Robust mode OFF: click to enable'}
-            className={`text-[10px] px-1.5 py-0.5 border ${robustMode ? 'border-[#00ff00] bg-[#00ff0011 text-[#00ff00]' : 'border-[#ff6600] text-[#ff6600] hover:bg-[#ff660011]'} disabled:opacity-50`}
+            className={`text-[10px] px-1.5 py-0.5 border ${robustMode ? 'border-[#00ff00] bg-[#00ff0011] text-[#00ff00]' : 'border-[#ff6600] text-[#ff6600] hover:bg-[#ff660011]'} disabled:opacity-50`}
           >
             [ROBUST]
           </button>
@@ -287,18 +287,20 @@ export function BacktestEngine() {
             onClick={() => setGridExpanded((b) => !b)}
             disabled={isRunning || research?.status === 'running'}
             title="Research grid: regime configs, strategy params, risk params"
-            className={`text-[10px] px-1.5 py-0.5 border ${gridExpanded ? 'border-[#00ff00] bg-[#00ff0011 text-[#00ff00]' : 'border-[#ff6600] text-[#ff6600] hover:bg-[#ff660011]'} disabled:opacity-50`}
+            className={`text-[10px] px-1.5 py-0.5 border ${gridExpanded ? 'border-[#00ff00] bg-[#00ff0011] text-[#00ff00]' : 'border-[#ff6600] text-[#ff6600] hover:bg-[#ff660011]'} disabled:opacity-50`}
           >
             [GRID]
           </button>
           <button onClick={run} disabled={isRunning || noTimeframesSelected} className="text-[10px] hover:text-[#ff6600] disabled:opacity-50">[RUN]</button>
           <button onClick={() => actions.cancelBacktest()} disabled={!isRunning} className="text-[10px] text-[#ff4444] hover:text-[#ff6666] disabled:opacity-50">[CANCEL]</button>
           <button
+            type="button"
             onClick={() => {
               actions.resetBacktest();
               setError(null);
             }}
             disabled={isRunning}
+            title="Clear backtest results, run request, and auto-compare log. Timeframe checkboxes for the next run are kept."
             className={`text-[10px] hover:text-[#ff6600] transition-opacity duration-200 ${
               isRunning ? 'opacity-50' : results.length === 0 ? 'opacity-40' : 'opacity-100'
             }`}
@@ -362,7 +364,7 @@ export function BacktestEngine() {
               onClick={() => setRegimeMode('any_only')}
               className={`text-[10px] border px-2 py-1 transition-colors ${
                 regimeMode === 'any_only'
-                  ? 'border-[#00ff00] bg-[#00ff0011 text-[#00ff00]'
+                  ? 'border-[#00ff00] bg-[#00ff0011] text-[#00ff00]'
                   : 'border-[#00ff00]/40 text-[#00ff00]/60 hover:border-[#00ff00]/70'
               }`}
             >
@@ -373,7 +375,7 @@ export function BacktestEngine() {
               onClick={() => setRegimeMode('all')}
               className={`text-[10px] border px-2 py-1 transition-colors ${
                 regimeMode === 'all'
-                  ? 'border-[#00ff00] bg-[#00ff0011 text-[#00ff00]'
+                  ? 'border-[#00ff00] bg-[#00ff0011] text-[#00ff00]'
                   : 'border-[#00ff00]/40 text-[#00ff00]/60 hover:border-[#00ff00]/70'
               }`}
             >
@@ -653,7 +655,7 @@ export function BacktestEngine() {
                 <div
                   key={tf}
                   className={`flex items-center gap-1.5 border px-2 py-1 transition-colors ${
-                    selected ? 'border-[#00ff00] bg-[#00ff0011 text-[#00ff00]' : 'border-[#00ff00]/40 text-[#00ff00]/60 hover:border-[#00ff00]/70'
+                    selected ? 'border-[#00ff00] bg-[#00ff0011] text-[#00ff00]' : 'border-[#00ff00]/40 text-[#00ff00]/60 hover:border-[#00ff00]/70'
                   } ${!instrumentSupports ? 'opacity-80' : ''}`}
                 >
                   <CicadaCheckbox

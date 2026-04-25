@@ -1,7 +1,19 @@
 /**
- * Production backtest engine: OHLCV data, regime detection, strategy signals,
- * rule-based trade execution (entry/exit per your rules) with PnL/drawdown,
- * and full metrics (Sharpe, Sortino, profit factor, etc.). Deterministic — no randomness.
+ * Front-end backtest engine — **fallback only**.
+ *
+ * In production the store calls ``postBacktestStream`` against the Python
+ * backend, which fans jobs out across CPU cores and runs the canonical
+ * implementations of every signal/indicator/regime function. This file is
+ * kept exclusively for the demo path where no backend is reachable: the user
+ * picked "Continue without MT5" or the Python service is down. When the
+ * backend is available, this code does not run — see TradingStore.runBacktest.
+ *
+ * Key parity guarantees:
+ *   - Iterates the *full* fetched series (`for (let i = 1; i < bars.length; i++)`),
+ *     never a sub-slice. The frontend pre-fetches BACKTEST_FULL_HISTORY_BARS
+ *     (50 000 — the documented Deriv cap).
+ *   - Same regime detector, same per-strategy signal function, same risk
+ *     defaults as the backend. Verified by the `verify-parity` script.
  */
 
 import type {
@@ -24,6 +36,8 @@ import { validateStrategyIds } from './strategySelection';
 import { detectRegimeSeries } from './regimes';
 import { getSignalFn, type SignalContext } from './signals';
 import { buildHtfIndexForEachLtfBar, getHigherTimeframe } from './multiTimeframe';
+import { commissionCharge, fillSlippagePct, swapAccrual } from './transactionCosts';
+import type { InstrumentType } from './types';
 import {
   DEFAULT_BACKTEST_PARAM_COMBOS_LIMIT,
   getParamCombinationsLimited,
@@ -121,7 +135,9 @@ export function runSingleBacktest(
   /** Override backtest config (risk, stop, target, regime lookback). */
   backtestConfig?: { initialEquity: number; slippagePct: number; riskPerTradePct: number; stopLossPct: number; takeProfitR: number; regimeLookback: number },
   /** Higher timeframe series (same symbol) for real HTF signals + optional HTF regime filter. */
-  mtf?: RunSingleBacktestMtfOptions
+  mtf?: RunSingleBacktestMtfOptions,
+  /** Instrument type for the cost model. Defaults to 'fiat' when unknown. */
+  instrumentType: InstrumentType = 'fiat'
 ): Omit<BacktestResultRow, 'id' | 'status' | 'completedAt'> {
   const scope = TIMEFRAME_TO_SCOPE[timeframe];
   const spread = Number.isFinite(spreadPct) ? spreadPct : BACKTEST_CONFIG.defaultSpreadPct;
@@ -225,12 +241,20 @@ export function runSingleBacktest(
       }
 
       if (exitPrice != null) {
-        const slippage = position.entryPrice * cfg.slippagePct;
+        // Per-type slippage: stops/targets experience thin-book slippage.
+        const slipPct = fillSlippagePct(cfg.slippagePct, instrumentType, exitReason);
+        const slippage = position.entryPrice * slipPct;
         const actualExit = position.side === 1 ? exitPrice - slippage : exitPrice + slippage;
-        const pnlPct = position.side === 1
+        const grossPnlPct = position.side === 1
           ? safeDiv(actualExit - position.entryPrice, position.entryPrice)
           : safeDiv(position.entryPrice - actualExit, position.entryPrice);
-        const pnl = position.size * position.entryPrice * pnlPct;
+        const grossPnl = position.size * position.entryPrice * grossPnlPct;
+        const holdBars = i - position.entryBar;
+        const notional = position.entryPrice * position.size;
+        const swap = swapAccrual(notional, instrumentType, holdBars, timeframe, position.side);
+        const comm = commissionCharge(notional, instrumentType);
+        const pnl = grossPnl + swap - comm;
+        const pnlPct = safeDiv(pnl, notional);
         equity += pnl;
         returns.push(pnlPct);
         trades.push({
@@ -585,13 +609,18 @@ export type GetBarsProvider = (
   timeframe: string
 ) => Promise<{ bars: OHLCVBar[]; dataSource: 'live' }>;
 
+/** Optional provider that gives the engine an instrument's type (fiat/crypto/synth/indices)
+ *  so the cost model can charge per-type commission / swap. */
+export type InstrumentTypeProvider = (instrumentId: string) => InstrumentType | undefined;
+
 export function runBacktest(
   request: BacktestRunRequest,
   onProgress?: (state: BacktestEngineState) => void,
   getBars?: GetBarsProvider,
   signal?: AbortSignal,
   /** When resuming after reload: existing results to keep; backtest continues from next job. */
-  existingResults?: BacktestResultRow[]
+  existingResults?: BacktestResultRow[],
+  getInstrumentType?: InstrumentTypeProvider
 ): Promise<BacktestResultRow[]> {
   if (!request.instrumentIds?.length) {
     return Promise.reject(new Error('At least one instrument is required'));
@@ -777,7 +806,8 @@ export function runBacktest(
             bars,
             job.strategyParams,
             jobConfig,
-            mtf
+            mtf,
+            getInstrumentType ? getInstrumentType(job.instrumentId) ?? 'fiat' : 'fiat'
           );
           const row: BacktestResultRow = {
             ...base,

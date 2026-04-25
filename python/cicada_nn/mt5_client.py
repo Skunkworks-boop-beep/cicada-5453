@@ -85,6 +85,8 @@ def connect(
     }
     if info["equity"] is None and info["balance"] is not None:
         info["equity"] = info["balance"]
+    # Cache for reconnect() — kept only in process memory.
+    remember_credentials(login_int, password, server, path)
     return True, info
 
 
@@ -121,6 +123,75 @@ def is_connected() -> bool:
     if not MT5_AVAILABLE or mt5 is None:
         return False
     return mt5.account_info() is not None
+
+
+# Last-known credentials for reconnect support. Persisted only in memory: a
+# crashed worker is expected to be reconfigured by the FE on restart, so we
+# never write credentials to disk.
+_LAST_CREDS: dict[str, Any] = {}
+
+
+def remember_credentials(login: int | str, password: str, server: str | None = None, path: str | None = None) -> None:
+    """Cache login parameters in memory so ``reconnect()`` can restore the
+    session after a transient broker disconnect without prompting the user."""
+    _LAST_CREDS.update({"login": login, "password": password, "server": server, "path": path})
+
+
+def reconnect() -> tuple[bool, dict[str, Any]]:
+    """Attempt to reconnect using the last-known credentials. Returns the same
+    shape as ``connect()``. Use after the broker drops the link."""
+    if not MT5_AVAILABLE or mt5 is None:
+        return False, {"error": "MetaTrader5 package not installed"}
+    if not _LAST_CREDS:
+        return False, {"error": "no cached credentials; call /mt5/connect first"}
+    try:
+        mt5.shutdown()
+    except Exception:
+        pass
+    return connect(
+        _LAST_CREDS.get("login"),
+        _LAST_CREDS.get("password", ""),
+        _LAST_CREDS.get("server"),
+        _LAST_CREDS.get("path"),
+    )
+
+
+def connection_status() -> dict[str, Any]:
+    """Structured connection status for the UI's Brokers panel.
+
+    Includes whether the package is installed, whether a session is alive,
+    last error from MT5 (if any), and a quick account snapshot when connected.
+    """
+    if not MT5_AVAILABLE or mt5 is None:
+        return {
+            "installed": False,
+            "connected": False,
+            "error": "MetaTrader5 package not installed",
+        }
+    try:
+        last_err = mt5.last_error()
+    except Exception:
+        last_err = None
+    account = mt5.account_info()
+    if account is None:
+        return {
+            "installed": True,
+            "connected": False,
+            "last_error": (last_err[1] if last_err and isinstance(last_err, tuple) and len(last_err) > 1 else None),
+            "has_credentials": bool(_LAST_CREDS),
+        }
+    return {
+        "installed": True,
+        "connected": True,
+        "login": getattr(account, "login", None),
+        "server": getattr(account, "server", ""),
+        "currency": getattr(account, "currency", ""),
+        "leverage": getattr(account, "leverage", 0),
+        "balance": getattr(account, "balance", 0.0),
+        "equity": getattr(account, "equity", None) or getattr(account, "balance", 0.0),
+        "trade_allowed": getattr(account, "trade_allowed", False),
+        "company": getattr(account, "company", ""),
+    }
 
 
 def _parse_date_utc(date_str: str, end_of_day: bool = False) -> datetime | None:

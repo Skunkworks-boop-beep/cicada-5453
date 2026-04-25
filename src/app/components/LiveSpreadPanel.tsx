@@ -12,11 +12,19 @@ import { BROKER_DERIV_ID, BROKER_EXNESS_ID, BROKER_EXNESS_API_ID } from '../core
 import { LIVE_FEED_INTERVAL_MS } from '../core/config';
 
 /** Slower poll for Live Spread to avoid rate limit (ticks stream). */
-const LIVE_SPREAD_INTERVAL_MS = 5_000;
+// Spread refresh tuned to the broker's tick cadence (Deriv tick stream is
+// already subscribed once and pushes updates; the polling interval is just a
+// safety re-fetch). 10 s keeps us nowhere near the 50 req/min ticks_history
+// cap even in pathological retry loops.
+const LIVE_SPREAD_INTERVAL_MS = 10_000;
 import { isMarketOpen } from '../core/marketHours';
 
-const STALE_THRESHOLD_MS = 8_000;
-const RETRY_INTERVAL_MS = 1_500;
+const STALE_THRESHOLD_MS = 15_000;
+// Stale-state retry: was 1.5s which alone produced 40 req/min — enough on its
+// own to trip the broker rate limit. The recovery cadence is now 6s; the
+// underlying tick stream is push-based, so even when "stale" we don't need a
+// hot poll.
+const RETRY_INTERVAL_MS = 6_000;
 
 function findPrice<T>(prices: Record<string, T>, symbol: string): T | undefined {
   const variants = [

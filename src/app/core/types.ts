@@ -341,6 +341,16 @@ export interface BotConfig {
   nnDetectionTimeframe?: string;
   /** When detection model: bar window size (for bar_window at predict). */
   nnDetectionBarWindow?: number;
+  /** Per-timeframe detection model metadata returned by backend builds. */
+  nnDetectionModels?: Record<string, {
+    timeframe: Timeframe;
+    scope?: TradeScope;
+    barWindow: number;
+    checkpointPath?: string;
+    valAccuracy?: number;
+    sampleCount?: number;
+    strategyId?: string;
+  }>;
 }
 
 /** Global execution: when true, deployed bots are allowed to execute trades */
@@ -415,6 +425,18 @@ export interface ClosedTrade {
   nnTpR?: number;
   /** NN size_multiplier used for entry */
   nnSizeMult?: number;
+  /** Gross PnL before costs (matches broker "price move × size"). */
+  grossPnl?: number;
+  /** Commission charged to close this trade. */
+  commission?: number;
+  /** Swap / funding accrual over the hold period. Negative = holding cost. */
+  swap?: number;
+  /** Slippage cost applied on this fill. */
+  slippageCost?: number;
+  /** Hold duration in bars (at the bot's primary timeframe). */
+  holdBars?: number;
+  /** Reason the trade closed (helps separate stop / target / signal / max_hold performance). */
+  exitReason?: 'signal' | 'stop' | 'target' | 'max_hold' | 'broker' | 'manual';
 }
 
 /** Where portfolio data comes from; 'none' = no live data yet. */

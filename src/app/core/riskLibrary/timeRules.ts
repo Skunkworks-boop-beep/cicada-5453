@@ -39,6 +39,7 @@ export const TIME_RULES: RiskRuleDef[] = [
     'Scalp: block Saturday–Sunday UTC.',
     ['scalp'],
     (ctx) => {
+      if (ctx.instrumentType === 'synthetic_deriv') return { allowed: true };
       const d = new Date().getUTCDay();
       return d === 0 || d === 6
         ? { allowed: false, reason: 'No scalp on weekend' }

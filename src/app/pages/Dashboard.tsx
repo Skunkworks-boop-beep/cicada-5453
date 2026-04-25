@@ -15,6 +15,7 @@ import { PriceChart } from '../components/PriceChart';
 import { LiveSpreadPanel } from '../components/LiveSpreadPanel';
 import { TerminalHeader } from '../components/TerminalHeader';
 import { ServerOffload } from '../components/ServerOffload';
+import { ProcessMonitor } from '../components/ProcessMonitor';
 import { InstrumentSelector } from '../components/InstrumentSelector';
 import { useTradingStore } from '../store/TradingStore';
 import { getNextDueRebuilds } from '../core/scheduler';
@@ -156,6 +157,7 @@ export default function Dashboard() {
               </div>
               <div className="space-y-2 sm:space-y-3 min-w-0">
                 <ServerOffload />
+                <ProcessMonitor />
                 <LivePortfolio />
                 <BotExecutionLog />
                 <BrokersManager />

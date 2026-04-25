@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useTradingStore } from '../store/TradingStore';
 import { fetchOHLCV } from '../core/ohlcvFeed';
-import { LIVE_FEED_INTERVAL_MS } from '../core/config';
+
+// PriceChart used to refresh every 2 s (LIVE_FEED_INTERVAL_MS). Each refresh
+// pulls 100 M5 bars from Deriv `ticks_history` — at 2 s cadence that's 30
+// req/min from the chart alone, on top of the ticker bar and bot loops. The
+// chart only ever shows the last 100 bars; once a minute is more than enough.
+const CHART_REFRESH_MS = 60_000;
 
 interface ChartData {
   time: string;
@@ -64,7 +69,7 @@ export function PriceChart() {
           }
         });
     doFetch();
-    const interval = setInterval(doFetch, LIVE_FEED_INTERVAL_MS);
+    const interval = setInterval(doFetch, CHART_REFRESH_MS);
     return () => {
       cancelled = true;
       clearTimeout(slowTimer);

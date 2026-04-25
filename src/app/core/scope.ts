@@ -105,11 +105,18 @@ export function getScopeStyleFromBotForInstrument(
 ): { scope: TradeScope; style: TradeStyle } {
   const bot = bots.find((b) => b.instrumentId === instrumentId);
   const inst = instruments.find((i) => i.id === instrumentId);
+  const styleForScope = (scope: TradeScope): TradeStyle => {
+    // 'position' is a scope (longest holds, D1/W1) but not a TradeStyle. We
+    // reuse 'swing' as the display style for position-scope bots — the actual
+    // execution still uses scope='position'. This prevents the old bug where
+    // fixedScope='position' silently decayed to 'swing' scope via STYLE_TO_SCOPE.
+    if (scope === 'scalp') return 'scalping';
+    if (scope === 'day') return 'day';
+    return 'swing';
+  };
   if (bot) {
     if (bot.scopeMode === 'manual' && bot.fixedScope) {
-      const scope = bot.fixedScope;
-      const style: TradeStyle = scope === 'scalp' ? 'scalping' : scope === 'day' ? 'day' : scope === 'swing' ? 'swing' : 'swing';
-      return { scope, style };
+      return { scope: bot.fixedScope, style: styleForScope(bot.fixedScope) };
     }
     if (bot.scopeMode === 'manual' && bot.fixedStyles?.length) {
       const style = bot.fixedStyles[0] as TradeStyle;
@@ -118,13 +125,11 @@ export function getScopeStyleFromBotForInstrument(
     }
     const primaryTf = bot.timeframes[0] ?? 'M5';
     const scope = (TIMEFRAME_TO_SCOPE[primaryTf] ?? 'day') as TradeScope;
-    const style: TradeStyle = scope === 'scalp' ? 'scalping' : scope === 'day' ? 'day' : scope === 'swing' ? 'swing' : 'swing';
-    return { scope, style };
+    return { scope, style: styleForScope(scope) };
   }
   const primaryTf = inst?.timeframes?.[0] ?? 'M5';
   const scope = (TIMEFRAME_TO_SCOPE[primaryTf] ?? 'day') as TradeScope;
-  const style: TradeStyle = (scope === 'scalp' ? 'scalping' : scope === 'day' ? 'day' : 'swing') as TradeStyle;
-  return { scope, style };
+  return { scope, style: styleForScope(scope) };
 }
 
 /** Typical bars per year for Sharpe/Sortino annualization (session-adjusted where relevant). */

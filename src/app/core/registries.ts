@@ -14,24 +14,70 @@ export const CHART_PATTERNS = CP;
 export const CANDLESTICK_PATTERNS = CSP;
 export const TRADE_LOGIC_STRATEGIES = [...INDICATOR_STRATEGIES, ...PRICE_ACTION_LOGIC];
 
+/**
+ * Registry is immutable at runtime — it's derived from module-level arrays.
+ * Memoising the combined list and its derived views avoids 236-element
+ * allocations on every hot-path call (every signal lookup during backtest).
+ * Returned arrays are copies so callers cannot mutate the shared cache.
+ */
+let _allStrategiesCache: readonly AnyStrategyDef[] | null = null;
+let _byIdCache: Map<string, AnyStrategyDef> | null = null;
+const _byCategoryCache = new Map<AnyStrategyDef['category'], readonly AnyStrategyDef[]>();
+const _byRegimeCache = new Map<MarketRegime, readonly AnyStrategyDef[]>();
+const _byStyleCache = new Map<TradeStyle, readonly AnyStrategyDef[]>();
+
+function _rebuildIndex(): void {
+  _allStrategiesCache = Object.freeze([...CP, ...CSP, ...TRADE_LOGIC_STRATEGIES]);
+  _byIdCache = new Map(_allStrategiesCache.map((s) => [s.id, s]));
+  _byCategoryCache.clear();
+  _byRegimeCache.clear();
+  _byStyleCache.clear();
+}
+
 export function getAllStrategies(): AnyStrategyDef[] {
-  return [
-    ...CP,
-    ...CSP,
-    ...TRADE_LOGIC_STRATEGIES,
-  ];
+  if (!_allStrategiesCache) _rebuildIndex();
+  return [...(_allStrategiesCache as readonly AnyStrategyDef[])];
+}
+
+/** Look up a strategy by id in O(1). Returns undefined when unknown. */
+export function getStrategyById(id: string): AnyStrategyDef | undefined {
+  if (!_byIdCache) _rebuildIndex();
+  return _byIdCache!.get(id);
+}
+
+/** Drop the caches (e.g. after hot-reload inserts new strategies). */
+export function invalidateStrategyCache(): void {
+  _allStrategiesCache = null;
+  _byIdCache = null;
+  _byCategoryCache.clear();
+  _byRegimeCache.clear();
+  _byStyleCache.clear();
 }
 
 export function getStrategiesByCategory(category: AnyStrategyDef['category']): AnyStrategyDef[] {
-  return getAllStrategies().filter((s) => s.category === category);
+  const cached = _byCategoryCache.get(category);
+  if (cached) return [...cached];
+  const list = Object.freeze(getAllStrategies().filter((s) => s.category === category));
+  _byCategoryCache.set(category, list);
+  return [...list];
 }
 
 export function getStrategiesForRegime(regime: MarketRegime): AnyStrategyDef[] {
-  return getAllStrategies().filter((s) => s.regimes.includes(regime) || s.regimes.includes('unknown'));
+  const cached = _byRegimeCache.get(regime);
+  if (cached) return [...cached];
+  const list = Object.freeze(
+    getAllStrategies().filter((s) => s.regimes.includes(regime) || s.regimes.includes('unknown'))
+  );
+  _byRegimeCache.set(regime, list);
+  return [...list];
 }
 
 export function getStrategiesForStyle(style: TradeStyle): AnyStrategyDef[] {
-  return getAllStrategies().filter((s) => s.styles.includes(style));
+  const cached = _byStyleCache.get(style);
+  if (cached) return [...cached];
+  const list = Object.freeze(getAllStrategies().filter((s) => s.styles.includes(style)));
+  _byStyleCache.set(style, list);
+  return [...list];
 }
 
 /** Full range M1 → weekly for training and trading. */

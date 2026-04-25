@@ -10,7 +10,7 @@ import {
   DEFAULT_RESEARCH_PARAM_TUNE_MAX_STRAT,
   DEFAULT_RESEARCH_REGIME_GRID_MAX,
 } from './gridConfig';
-import type { BacktestResultRow, StrategyParams } from './types';
+import type { BacktestResultRow, StrategyParams, Timeframe, TradeScope } from './types';
 
 export interface BuildRequestPayload {
   results: Array<{
@@ -60,6 +60,16 @@ export interface BuildResponse {
   detection_timeframe?: string | null;
   /** When detection model: bar window size (for bar_window at predict). */
   detection_bar_window?: number | null;
+  /** Per-timeframe detection models trained during build. Keyed by timeframe. */
+  detection_models?: Record<string, {
+    timeframe: Timeframe;
+    scope?: TradeScope;
+    bar_window: number;
+    checkpoint_path?: string;
+    val_accuracy?: number;
+    num_samples?: number;
+    strategy_id?: string;
+  }> | null;
 }
 
 /** NN `/build` can run for many minutes (detection training + epochs). User cancel still aborts via merged signal. */
@@ -196,6 +206,8 @@ function parseApiErrorDetail(text: string): string {
 }
 
 /** Run NN inference with current regime and timeframe so decisions are regime-aware. */
+const PREDICT_TIMEOUT_MS = 60_000;
+
 export async function postPredict(
   payload: PredictRequest,
   options: { signal?: AbortSignal } = {}
@@ -205,7 +217,7 @@ export async function postPredict(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: options.signal ?? AbortSignal.timeout(15_000),
+      signal: options.signal ?? AbortSignal.timeout(PREDICT_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -306,6 +318,296 @@ export async function postExecutionLogAppend(
       console.warn('[api] postExecutionLogAppend failed:', e);
     }
     return null;
+  }
+}
+
+// ── Backend execution daemon control ──────────────────────────────────────
+
+export interface DaemonBotSummary {
+  bot_id: string;
+  enabled: boolean;
+  last_tick_ts: number;
+  instrument_id: string;
+  scope: string;
+  last_event?: Record<string, unknown> | null;
+}
+
+export interface DaemonDeployPayload {
+  bot_id: string;
+  instrument_id: string;
+  instrument_symbol: string;
+  instrument_type?: string;
+  primary_timeframe?: string;
+  scope?: string;
+  max_positions?: number;
+  nn_feature_vector?: number[];
+  nn_detection_timeframe?: string | null;
+  nn_detection_bar_window?: number | null;
+  risk_per_trade_pct?: number;
+  max_drawdown_pct?: number;
+  use_kelly?: boolean;
+  kelly_fraction?: number;
+  max_correlated_exposure?: number;
+  default_stop_loss_pct?: number;
+  default_risk_reward_ratio?: number;
+}
+
+export async function getDaemonBots(options?: { signal?: AbortSignal }): Promise<DaemonBotSummary[]> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/daemon/list`, {
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { bots?: DaemonBotSummary[] };
+    return Array.isArray(data.bots) ? data.bots : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function postDaemonDeploy(
+  payload: DaemonDeployPayload,
+  options?: { signal?: AbortSignal }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/daemon/deploy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: options?.signal ?? AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function postDaemonAction(
+  botId: string,
+  action: 'stop' | 'enable' | 'disable',
+  options?: { signal?: AbortSignal }
+): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/daemon/${encodeURIComponent(botId)}/${action}`, {
+      method: 'POST',
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    return { ok: res.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function postDaemonPortfolio(
+  equity: number,
+  drawdownPct: number = 0,
+  options?: { signal?: AbortSignal }
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/daemon/portfolio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ equity, drawdown_pct: drawdownPct }),
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+
+// ── Cross-request job registry + compute info ────────────────────────────
+
+export interface JobRecord {
+  job_id: string;
+  kind: string;            // 'backtest' | 'research' | 'shadow' | …
+  title: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  progress: number;        // 0–100
+  message: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  meta?: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface ComputeInfo {
+  cpu_count: number;
+  backtest_workers: number;
+  research_workers: number;
+  torch_num_threads: number;
+  use_cuda: boolean;
+  device: string;
+  cuda_device_count?: number;
+  cuda_devices?: string[];
+  use_multi_gpu?: boolean;
+  tf32: boolean;
+  dataloader_workers: number;
+  pin_memory: boolean;
+  shadow_workers: number;
+}
+
+export async function getJobs(
+  options?: { kind?: string; activeOnly?: boolean; signal?: AbortSignal }
+): Promise<JobRecord[]> {
+  try {
+    const params = new URLSearchParams();
+    if (options?.kind) params.set('kind', options.kind);
+    if (options?.activeOnly) params.set('active_only', 'true');
+    const qs = params.toString();
+    const url = `${getNnApiBaseUrl()}/jobs${qs ? `?${qs}` : ''}`;
+    const res = await fetch(url, { signal: options?.signal ?? AbortSignal.timeout(5_000) });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { jobs?: JobRecord[] };
+    return Array.isArray(data.jobs) ? data.jobs : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function postJobCancel(
+  jobId: string,
+  options?: { signal?: AbortSignal }
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST',
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function getComputeInfo(
+  options?: { signal?: AbortSignal }
+): Promise<ComputeInfo | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/compute`, {
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ComputeInfo;
+  } catch {
+    return null;
+  }
+}
+
+// ── Shadow training (live learning + hot-swap) ───────────────────────────
+
+export interface ShadowTrainRequestPayload {
+  instrument_id: string;
+  results: Array<{
+    instrumentId: string;
+    strategyId: string;
+    timeframe: string;
+    regime: string;
+    winRate: number;
+    profit: number;
+    trades?: number;
+    maxDrawdown?: number;
+    profitFactor?: number;
+    sharpeRatio?: number;
+    sortinoRatio?: number;
+    dataEndTime?: string;
+  }>;
+  instrument_types?: Record<string, string>;
+  epochs?: number;
+  lr?: number;
+  kind?: 'detection' | 'tabular';
+  bars?: Record<string, Array<{ open: number; high: number; low: number; close: number; time?: number }>>;
+}
+
+export interface ShadowJobSummary {
+  job_id: string;
+  instrument_id: string;
+  kind: string;
+  status: 'queued' | 'running' | 'ready' | 'promoted' | 'failed' | 'aborted';
+  started_at: string;
+  finished_at?: string | null;
+  error?: string | null;
+  oos_accuracy?: number | null;
+  parent_oos_accuracy?: number | null;
+  message?: string | null;
+}
+
+export async function postShadowTrain(
+  payload: ShadowTrainRequestPayload,
+  options?: { signal?: AbortSignal }
+): Promise<{ success: boolean; job_id?: string; status?: string; message?: string; error?: string }> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/shadow/train`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: options?.signal ?? AbortSignal.timeout(30_000),
+    });
+    const data = (await res.json()) as { job_id?: string; status?: string; message?: string; detail?: string };
+    if (!res.ok) return { success: false, error: data.detail ?? `HTTP ${res.status}` };
+    return { success: true, job_id: data.job_id, status: data.status, message: data.message };
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function getShadowJobs(
+  instrumentId?: string,
+  options?: { signal?: AbortSignal }
+): Promise<ShadowJobSummary[]> {
+  try {
+    const url = `${getNnApiBaseUrl()}/shadow/jobs${instrumentId ? `?instrument_id=${encodeURIComponent(instrumentId)}` : ''}`;
+    const res = await fetch(url, { signal: options?.signal ?? AbortSignal.timeout(8_000) });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { jobs?: ShadowJobSummary[] };
+    return Array.isArray(data.jobs) ? data.jobs : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function postShadowPromote(
+  jobId: string,
+  gate?: { minOosAccuracy?: number; accuracyTolerance?: number; warmupSeconds?: number },
+  options?: { signal?: AbortSignal }
+): Promise<{ promoted: boolean; reason?: string; job_id?: string }> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/shadow/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        job_id: jobId,
+        min_oos_accuracy: gate?.minOosAccuracy,
+        accuracy_tolerance: gate?.accuracyTolerance,
+        warmup_seconds: gate?.warmupSeconds,
+      }),
+      signal: options?.signal ?? AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { promoted: false, reason: `HTTP ${res.status}` };
+    return (await res.json()) as { promoted: boolean; reason?: string; job_id?: string };
+  } catch (e) {
+    return { promoted: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function postShadowAbort(
+  jobId: string,
+  options?: { signal?: AbortSignal }
+): Promise<{ aborted: boolean }> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/shadow/abort`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId }),
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return { aborted: false };
+    return (await res.json()) as { aborted: boolean };
+  } catch {
+    return { aborted: false };
   }
 }
 
@@ -665,6 +967,8 @@ export async function postBacktest(
     regimeTunes?: Record<string, Record<string, number>>;
     /** When HTF bars are sent under instrumentId|HTF: map regime from HTF (omit/auto/true/false). */
     preferHtfRegime?: boolean;
+    /** Instrument types so the server cost model charges per-type commission/swap. */
+    instrumentTypes?: Record<string, string>;
   },
   signal?: AbortSignal
 ): Promise<{ results: BacktestResultRow[]; status: string } | { error: string }> {
@@ -696,6 +1000,7 @@ export async function postBacktest(
         param_combos_limit: request.paramCombosLimit ?? DEFAULT_BACKTEST_PARAM_COMBOS_LIMIT,
         regime_tunes: request.regimeTunes ?? undefined,
         prefer_htf_regime: request.preferHtfRegime,
+        instrument_types: request.instrumentTypes ?? undefined,
       }),
       signal: abortSignal,
     });
@@ -737,6 +1042,7 @@ export async function postBacktestStream(
     paramCombosLimit?: number;
     regimeTunes?: Record<string, Record<string, number>>;
     preferHtfRegime?: boolean;
+    instrumentTypes?: Record<string, string>;
   },
   onChunk: (chunk: {
     type?: string;
@@ -779,6 +1085,7 @@ export async function postBacktestStream(
         param_combos_limit: request.paramCombosLimit ?? DEFAULT_BACKTEST_PARAM_COMBOS_LIMIT,
         regime_tunes: request.regimeTunes ?? undefined,
         prefer_htf_regime: request.preferHtfRegime,
+        instrument_types: request.instrumentTypes ?? undefined,
       }),
       signal: abortSignal,
     });

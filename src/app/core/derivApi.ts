@@ -5,6 +5,14 @@
  */
 
 import { DERIV_ACTIVE_SYMBOLS_CACHE_MS, DERIV_TICKS_HISTORY_THROTTLE_MS, DERIV_PORTFOLIO_THROTTLE_MS, DERIV_TICK_QUOTE_CACHE_MS } from './config';
+import {
+  DERIV_GLOBAL,
+  DERIV_PORTFOLIO,
+  DERIV_PROPOSAL,
+  DERIV_BUY_SELL,
+  DERIV_TICK,
+  DERIV_TICKS_HISTORY,
+} from './rateLimiter';
 import { inferPointSize } from './spreadUtils';
 import { isDerivFiatOrCryptoApiSymbol, resolveDerivMarketDataSymbol } from './derivSymbolMaps';
 
@@ -482,6 +490,10 @@ function getSymbolsFromItem(item: DerivActiveSymbol): string[] {
 
 /** Cache for active_symbols to avoid rate limit. TTL from config. */
 let activeSymbolsCache: { data: { symbols: string[]; byGroup: Record<DerivSyntheticGroup, string[]> }; expiresAt: number } | null = null;
+let activeSymbolsBackoffUntil = 0;
+let ticksHistoryBackoffUntil = 0;
+let ticksHistoryWarnedAt = 0;
+const DERIV_TICKS_HISTORY_RATE_LIMIT_COOLDOWN_MS = 120_000;
 
 export function clearActiveSymbolsCache(): void {
   activeSymbolsCache = null;
@@ -500,7 +512,20 @@ export async function getActiveSyntheticSymbols(): Promise<{
   if (activeSymbolsCache && activeSymbolsCache.expiresAt > now) {
     return activeSymbolsCache.data;
   }
-  const res = await getActiveSymbols();
+  if (activeSymbolsCache && now < activeSymbolsBackoffUntil) {
+    return activeSymbolsCache.data;
+  }
+  let res: DerivMessage;
+  try {
+    res = await getActiveSymbols();
+  } catch (e) {
+    const message = getDerivErrorMessage(e);
+    if (isDerivRateLimit(message) && activeSymbolsCache) {
+      activeSymbolsBackoffUntil = now + DERIV_TICKS_HISTORY_RATE_LIMIT_COOLDOWN_MS;
+      return activeSymbolsCache.data;
+    }
+    throw e;
+  }
   const list = (res.active_symbols as DerivActiveSymbol[] | undefined) ?? [];
   const symbols: string[] = [];
   const byGroup: Record<DerivSyntheticGroup, string[]> = {
@@ -918,21 +943,27 @@ export async function getTicksHistoryCandles(
 /** Max candles per Deriv ticks_history request. API default/max is 5000 per schema. */
 const DERIV_CANDLES_PER_REQUEST = 5_000;
 
-/** Last ticks_history request timestamp. Throttle to avoid Deriv rate limit. */
-let lastTicksHistoryAt = 0;
-
-/** Throttled request for ticks_history. Waits before sending; retries on rate limit with backoff. */
+/**
+ * Token-bucket-throttled ticks_history request.
+ *
+ * Deriv's documented limit for `ticks_history` is **50 requests per minute**
+ * per app id. The previous "min delay between requests" approach (350 ms gap)
+ * allowed ~2.86 req/s — within seconds we'd accumulate >50 in any 60-s window
+ * and start getting RateLimit errors. The token bucket sustains the actual
+ * 0.83 req/s cap with a small burst budget.
+ */
 async function ticksHistoryRequest<T>(payload: Record<string, unknown>): Promise<T> {
-  const throttleMs = DERIV_TICKS_HISTORY_THROTTLE_MS;
   const maxRetries = 3;
   let lastErr: Error | null = null;
+  const now = Date.now();
+  if (now < ticksHistoryBackoffUntil) {
+    throw new Error('Deriv ticks_history temporarily paused after rate limit');
+  }
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const now = Date.now();
-    const elapsed = now - lastTicksHistoryAt;
-    if (elapsed < throttleMs) {
-      await new Promise((r) => setTimeout(r, throttleMs - elapsed));
-    }
-    lastTicksHistoryAt = Date.now();
+    // Wait for both a global token (overall 30 req/s ceiling) and an endpoint
+    // token (50 req/min). Both are no-ops when capacity is available.
+    await DERIV_GLOBAL.acquire();
+    await DERIV_TICKS_HISTORY.acquire();
     try {
       return await request<T>(payload);
     } catch (e) {
@@ -940,9 +971,18 @@ async function ticksHistoryRequest<T>(payload: Record<string, unknown>): Promise
       const msg = lastErr.message.toLowerCase();
       const isRateLimit = /rate\s*limit|ticks_history/i.test(msg);
       if (isRateLimit && attempt < maxRetries) {
-        const backoffMs = 1000 * Math.pow(2, attempt + 1);
+        // Exponential backoff layered on top of the bucket; the broker may
+        // have a longer-window cap we cannot model perfectly.
+        const backoffMs = 1500 * Math.pow(2, attempt + 1);
         await new Promise((r) => setTimeout(r, backoffMs));
         continue;
+      }
+      if (isRateLimit) {
+        ticksHistoryBackoffUntil = Date.now() + DERIV_TICKS_HISTORY_RATE_LIMIT_COOLDOWN_MS;
+        if (typeof console !== 'undefined' && console.warn && Date.now() - ticksHistoryWarnedAt > DERIV_TICKS_HISTORY_RATE_LIMIT_COOLDOWN_MS) {
+          ticksHistoryWarnedAt = Date.now();
+          console.warn(`[derivApi] ticks_history rate-limited; pausing OHLCV fetches for ${Math.round(DERIV_TICKS_HISTORY_RATE_LIMIT_COOLDOWN_MS / 1000)}s`);
+        }
       }
       throw lastErr;
     }
@@ -1032,6 +1072,10 @@ async function fetchDerivPortfolioRaw(): Promise<DerivPortfolioContract[]> {
     return portfolioRawCache.contracts;
   }
   if (!ws || ws.readyState !== WebSocket.OPEN) return [];
+  // portfolio is documented at 30 req/min; the bucket enforces it across all
+  // callers (TickerBar + portfolio sync + bot exec).
+  await DERIV_GLOBAL.acquire();
+  await DERIV_PORTFOLIO.acquire();
   const res = await request<{ portfolio?: { contracts?: DerivPortfolioContract[] }; error?: { message: string } }>({
     portfolio: 1,
   });
@@ -1178,6 +1222,9 @@ export async function getDerivProposal(
   duration: number = 5,
   durationUnit: 't' | 's' | 'm' | 'h' | 'd' = 't'
 ): Promise<{ proposal_id: string; ask_price: number }> {
+  // proposal: 100 req/min documented; bucket honours both endpoint + global caps.
+  await DERIV_GLOBAL.acquire();
+  await DERIV_PROPOSAL.acquire();
   // Use 'symbol' for legacy ws.derivws.com/websockets/v3; newer API uses 'underlying_symbol'.
   // "Properties not allowed: underlying_symbol" indicates legacy API in use.
   const res = await request<{
@@ -1205,6 +1252,9 @@ export async function getDerivProposal(
  * Buy a Deriv contract using a proposal ID.
  */
 export async function buyDerivContract(proposalId: string, price: number): Promise<{ contract_id: number }> {
+  // buy / sell: 100 req/min documented.
+  await DERIV_GLOBAL.acquire();
+  await DERIV_BUY_SELL.acquire();
   const res = await request<{
     buy?: { contract_id: number };
     error?: { message: string };
@@ -1259,6 +1309,37 @@ function getPointSizeOrNull(symbol: string, midPrice: number): number | null {
 }
 
 let tickQuoteCache: Map<string, { data: { bid: number; ask: number; pip_size?: number }; at: number }> = new Map();
+let tickQuoteMissCache: Map<string, number> = new Map();
+let tickQuoteRateLimitedUntil = 0;
+let tickQuoteRateLimitWarnedAt = 0;
+const DERIV_TICK_QUOTE_MISS_CACHE_MS = 60_000;
+const DERIV_TICK_RATE_LIMIT_COOLDOWN_MS = 120_000;
+
+function getDerivErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return String(error);
+}
+
+function isExpectedTickQuoteMiss(message: string): boolean {
+  return /market\s+is\s+presently\s+closed|symbol\s+.+\s+is\s+invalid/i.test(message);
+}
+
+function isDerivRateLimit(message: string): boolean {
+  return /rate\s+limit/i.test(message);
+}
+
+function noteDerivTickRateLimit(message: string): void {
+  tickQuoteRateLimitedUntil = Date.now() + DERIV_TICK_RATE_LIMIT_COOLDOWN_MS;
+  if (typeof console !== 'undefined' && console.warn && Date.now() - tickQuoteRateLimitWarnedAt > DERIV_TICK_RATE_LIMIT_COOLDOWN_MS) {
+    tickQuoteRateLimitWarnedAt = Date.now();
+    console.warn(`[derivApi] tick quote rate-limited; pausing spread tick probes for ${Math.round(DERIV_TICK_RATE_LIMIT_COOLDOWN_MS / 1000)}s:`, message);
+  }
+}
 
 /**
  * Get one tick (bid/ask) from Deriv tick stream for a symbol. Used to derive spread when no positions.
@@ -1269,6 +1350,13 @@ async function getDerivTickQuote(symbol: string): Promise<{ bid: number; ask: nu
   const now = Date.now();
   const cached = tickQuoteCache.get(symbol);
   if (cached && now - cached.at < DERIV_TICK_QUOTE_CACHE_MS) return cached.data;
+  if (now < tickQuoteRateLimitedUntil) return null;
+  const missedAt = tickQuoteMissCache.get(symbol);
+  if (missedAt && now - missedAt < DERIV_TICK_QUOTE_MISS_CACHE_MS) return null;
+  // tick stream subscriptions don't count toward request limits, but the
+  // initial subscribe call does — bucket-throttle it.
+  await DERIV_GLOBAL.acquire();
+  await DERIV_TICK.acquire();
   try {
     const res = await request<{
       tick?: { bid?: number; ask?: number; quote?: number; pip_size?: number };
@@ -1277,7 +1365,12 @@ async function getDerivTickQuote(symbol: string): Promise<{ bid: number; ask: nu
     }>({ ticks: symbol, subscribe: 1 });
     if (res.error?.message) {
       pendingTickResolve = null;
-      if (typeof console !== 'undefined' && console.warn) {
+      tickQuoteMissCache.set(symbol, Date.now());
+      if (isDerivRateLimit(res.error.message)) {
+        noteDerivTickRateLimit(res.error.message);
+        return null;
+      }
+      if (!isExpectedTickQuoteMiss(res.error.message) && typeof console !== 'undefined' && console.warn) {
         console.warn('[derivApi] getDerivTickQuote error:', res.error.message, 'symbol:', symbol);
       }
       return null;
@@ -1316,7 +1409,13 @@ async function getDerivTickQuote(symbol: string): Promise<{ bid: number; ask: nu
     return null;
   } catch (e) {
     pendingTickResolve = null;
-    if (typeof console !== 'undefined' && console.warn) {
+    const message = getDerivErrorMessage(e);
+    tickQuoteMissCache.set(symbol, Date.now());
+    if (isDerivRateLimit(message)) {
+      noteDerivTickRateLimit(message);
+      return null;
+    }
+    if (!isExpectedTickQuoteMiss(message) && typeof console !== 'undefined' && console.warn) {
       console.warn('[derivApi] getDerivTickQuote failed:', e, 'symbol:', symbol);
     }
     return null;
@@ -1360,14 +1459,18 @@ export async function getDerivSymbolSpreads(): Promise<Record<string, number>> {
 
 /**
  * Get live spread for a single Deriv symbol from tick stream (broker). Use when symbol has no open position.
- * Tries resolved symbol first, then all possible API forms (JD10, Jump 10 Index, jump_10, etc.) until one works.
+ * Fiat/crypto are exact frx/cry symbols. Synthetics may need alternate API forms.
  */
 export async function getDerivSymbolSpreadFromTick(symbol: string): Promise<number | null> {
+  if (Date.now() < tickQuoteRateLimitedUntil) return null;
   const apiSymbol = await resolveSymbolForTicks(symbol);
   if (!apiSymbol) return null;
-  const toTry = [apiSymbol, ...getPossibleApiSymbolsForTicks(symbol).filter((s) => s !== apiSymbol)];
+  const toTry = isDerivFiatOrCryptoApiSymbol(apiSymbol)
+    ? [apiSymbol]
+    : Array.from(new Set([apiSymbol, ...getPossibleApiSymbolsForTicks(symbol).filter((s) => s !== apiSymbol)]));
   let q: { bid: number; ask: number; pip_size?: number } | null = null;
   for (const sym of toTry) {
+    if (Date.now() < tickQuoteRateLimitedUntil) break;
     q = await getDerivTickQuote(sym);
     if (q && (q.bid > 0 || q.ask > 0)) break;
   }

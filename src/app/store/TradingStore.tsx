@@ -1290,7 +1290,8 @@ function getActions(): TradingStoreActions {
         const inst = instruments.find((i) => i.id === id);
         instrument_symbols[id] = inst?.symbol ?? id;
       }
-      const timeframes = ['M5', 'H1'];
+      // Must match `SCOPE_TO_TIMEFRAME` in python/cicada_nn/backward_validation.py (swing→H4, position→D1)
+      const timeframes: Timeframe[] = ['M5', 'H1', 'H4', 'D1'];
       const barsByKey: Record<string, Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>> = {};
       try {
         backwardValidation = { ...backwardValidation!, log: [...backwardValidation!.log, { level: 'progress', message: `Fetching bars for ${instrumentIds.length} instruments (${timeframes.join(', ')})...` }] };
@@ -1580,6 +1581,7 @@ function getActions(): TradingStoreActions {
             paramCombosLimit: request.paramCombosLimit ?? DEFAULT_BACKTEST_PARAM_COMBOS_LIMIT,
             regimeTunes: request.regimeTunes,
             preferHtfRegime: request.preferHtfRegime,
+            instrumentTypes: Object.fromEntries(instruments.map((i) => [i.id, i.type])),
           }, (chunk) => {
             if (chunk.type === 'progress') {
               const phase = chunk.phase ?? `Processing on server... (${chunk.completed ?? 0}/${chunk.total ?? 0})`;
@@ -1704,7 +1706,16 @@ function getActions(): TradingStoreActions {
           }
         };
         const requestWithSymbols = { ...request, instrument_symbols };
-        const results = await runBacktest(requestWithSymbols, onProgress, getBars, backtestAbortController!.signal);
+        const instTypeIndex = new Map(instruments.map((i) => [i.id, i.type]));
+        const getInstrumentType = (id: string) => instTypeIndex.get(id);
+        const results = await runBacktest(
+          requestWithSymbols,
+          onProgress,
+          getBars,
+          backtestAbortController!.signal,
+          undefined,
+          getInstrumentType
+        );
         if (backtestAbortReason === 'broker_disconnected') {
           backtestAbortReason = null;
           setBacktestCancelled(results, request, 'Broker disconnected');
@@ -2330,6 +2341,20 @@ function getActions(): TradingStoreActions {
                 oosSampleCount: res.oos_sample_count ?? undefined,
                 nnDetectionTimeframe: res.detection_timeframe ?? undefined,
                 nnDetectionBarWindow: res.detection_bar_window ?? undefined,
+                nnDetectionModels: res.detection_models
+                  ? Object.fromEntries(Object.entries(res.detection_models).map(([tf, meta]) => [
+                      tf,
+                      {
+                        timeframe: meta.timeframe,
+                        scope: meta.scope,
+                        barWindow: meta.bar_window,
+                        checkpointPath: meta.checkpoint_path,
+                        valAccuracy: meta.val_accuracy,
+                        sampleCount: meta.num_samples,
+                        strategyId: meta.strategy_id,
+                      },
+                    ]))
+                  : undefined,
               };
               bots = bots.map((x) => (x.id === botId ? updated : x));
               resetBacktestResults();
@@ -2466,9 +2491,25 @@ function getActions(): TradingStoreActions {
     },
     deleteBot(botId) {
       if (buildingBotId === botId) buildAbortController?.abort();
+      const removed = bots.find((b) => b.id === botId);
       bots = bots.filter((b) => b.id !== botId);
       delete closedTradesByBot[botId];
-      botExecutionLog = botExecutionLog.filter((e) => e.botId !== botId);
+      const normSym = (s: string) => s.replace(/\s+/g, '').replace(/\//g, '').toUpperCase();
+      const instSym = removed
+        ? instruments.find((i) => i.id === removed.instrumentId)?.symbol
+        : undefined;
+      const otherBotSameInstrument = instSym
+        ? bots.some((b) => {
+            const s = instruments.find((i) => i.id === b.instrumentId)?.symbol;
+            return s && normSym(s) === normSym(instSym);
+          })
+        : false;
+      botExecutionLog = botExecutionLog.filter((e) => {
+        if (e.botId === botId) return false;
+        if (e.botId) return true;
+        if (otherBotSameInstrument || !instSym) return true;
+        return normSym(e.symbol ?? '') !== normSym(instSym);
+      });
       schedulePersist();
       emit();
     },
@@ -2594,7 +2635,21 @@ function getActions(): TradingStoreActions {
       if (derivBroker) {
         try {
           const spreads = await getDerivSymbolSpreads();
-          const derivInstruments = instruments.filter((i) => i.brokerId === BROKER_DERIV_ID);
+          const usedDerivInstrumentIds = new Set<string>();
+          for (const i of instruments) {
+            if (i.brokerId === BROKER_DERIV_ID && i.selected) usedDerivInstrumentIds.add(i.id);
+          }
+          for (const b of bots) {
+            if (b.status === 'deployed') usedDerivInstrumentIds.add(b.instrumentId);
+          }
+          for (const p of getPortfolioState().positions) {
+            usedDerivInstrumentIds.add(p.instrumentId);
+          }
+          const derivInstruments = instruments.filter((i) =>
+            i.brokerId === BROKER_DERIV_ID &&
+            i.status === 'active' &&
+            usedDerivInstrumentIds.has(i.id)
+          );
           instruments = instruments.map((i) => {
             if (i.brokerId !== BROKER_DERIV_ID) return i;
             const sym = (i.symbol ?? '').replace(/\s/g, '_').trim();

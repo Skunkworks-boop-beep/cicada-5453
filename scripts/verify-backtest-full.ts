@@ -17,6 +17,18 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
 
+/** Resolve the project venv python so verify works without a system-wide torch. */
+function resolvePython(): string {
+  const env = process.env.CICADA_PYTHON?.trim();
+  if (env && existsSync(env)) return env;
+  const posix = join(rootDir, 'python/venv/bin/python');
+  const win = join(rootDir, 'python/venv/Scripts/python.exe');
+  if (existsSync(posix)) return posix;
+  if (existsSync(win)) return win;
+  return 'python3';
+}
+const PYTHON = resolvePython();
+
 import { getAllStrategies } from '../src/app/core/registries';
 import { runSingleBacktest } from '../src/app/core/backtest';
 import type { OHLCVBar } from '../src/app/core/ohlcv';
@@ -58,7 +70,7 @@ function runPythonBacktest(
 ): { trades: number; profit: number; status: string; error?: string } {
   const barsForPy = bars.map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }));
   writeFileSync(TMP_BARS, JSON.stringify(barsForPy));
-  const proc = spawnSync('python', [join(rootDir, 'scripts/run_python_parity.py'), 'backtest', TMP_BARS, strategyId, regime, JSON.stringify(params ?? {})], {
+  const proc = spawnSync(PYTHON, [join(rootDir, 'scripts/run_python_parity.py'), 'backtest', TMP_BARS, strategyId, regime, JSON.stringify(params ?? {})], {
     cwd: rootDir,
     encoding: 'utf-8',
   });

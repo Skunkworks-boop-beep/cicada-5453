@@ -6,6 +6,9 @@ Run: uvicorn cicada_nn.api:app --reload --host 0.0.0.0 --port 8000
 import json
 import logging
 import os
+from datetime import datetime, timezone
+from threading import RLock
+from typing import Any
 
 logger = logging.getLogger(__name__)
 import tempfile
@@ -15,11 +18,33 @@ import numpy as np
 import torch
 
 from .train import _safe_instrument_id
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
+
+
+# ── Optional API key auth ─────────────────────────────────────────────────────
+# When CICADA_API_KEY is set in the environment, mutating endpoints (build,
+# state writes, MT5 order/close-partial) require the X-API-Key header to match.
+# Read-only endpoints stay open so the dashboard works without configuring auth.
+# Empty / unset → auth disabled (preserves current developer experience).
+_API_KEY = (os.environ.get("CICADA_API_KEY") or "").strip()
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    if not _API_KEY:
+        return
+    if x_api_key != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 # Use CUDA for inference when available (e.g. RTX 2070)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_MODEL_CACHE_LOCK = RLock()
+_DETECTION_MODEL_CACHE: dict[str, dict[str, Any]] = {}
+_TABULAR_MODEL_CACHE: dict[str, dict[str, Any]] = {}
+try:
+    _DETECTION_MC_SAMPLES = max(0, int(os.environ.get("CICADA_DETECTION_MC_SAMPLES", "4")))
+except ValueError:
+    _DETECTION_MC_SAMPLES = 4
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -37,21 +62,370 @@ from .grid_config import (
 from .research_server import run_grid_research, run_grid_research_with_progress, MIN_BARS_REQUIRED_RESEARCH
 from .backward_validation import run_backward_validation
 from .storage import StorageService
+from .daemon_runtime import (
+    get_daemon,
+    hydrate_and_launch_from_storage,
+    hydrate_portfolio_from_storage,
+    set_instrument_symbol_map,
+    set_portfolio_snapshot,
+    shutdown_daemon,
+)
+from .event_bus import EVENT_BUS
+from .execution_daemon import BotRuntimeConfig
+from .job_manager import JOB_MANAGER
+from .risk import BotRiskParams
+from .shadow_training import (
+    PromotionGate,
+    ShadowRegistry,
+    abort_shadow,
+    can_promote_shadow,
+    promote_shadow_atomically,
+    shadow_train_detection,
+    shadow_train_tabular,
+)
 
 app = FastAPI(title="CICADA-5453 NN API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# CORS origins: comma-separated list in CICADA_CORS_ORIGINS (default "*").
+# Keeping default open preserves the demo-mode developer experience on a local
+# machine; production deployments should set it to the dashboard origin.
+_cors_env = (os.environ.get("CICADA_CORS_ORIGINS") or "*").strip()
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*", "X-API-Key"],
+)
 
 
 @app.on_event("startup")
 def _configure_logging():
-    """Ensure cicada_nn modules log at INFO for research/backward-validation visibility."""
-    for name in ("cicada_nn", "cicada_nn.research_server", "cicada_nn.backward_validation"):
-        log = logging.getLogger(name)
-        if log.level == logging.NOTSET:
-            log.setLevel(logging.INFO)
+    """Install the structured JSON formatter and set sensible levels per module."""
+    from .logging_setup import configure_logging
+    from .compute import configure_torch_for_speed, get_compute_config
+    configure_logging()
+    configure_torch_for_speed()
+    get_compute_config()  # warm the cache + emit the one-line config log
+
+
+@app.on_event("startup")
+def _bootstrap_daemon():
+    """Hydrate persisted bots and launch the execution daemon. After this hook,
+    the backend owns the live trade loop — the frontend's job is purely to
+    display state and post user intent."""
+    try:
+        # Stale shadow jobs from the previous process must be cleared first;
+        # their workers died with that process so they cannot still be
+        # ``running`` even though the file says so.
+        cleared = SHADOW_REGISTRY.mark_interrupted_active(
+            "interrupted by backend restart"
+        )
+        if cleared:
+            logger.info("cleared %d stale shadow job(s) on startup", cleared)
+        hydrate_portfolio_from_storage(STORAGE)
+        launched = hydrate_and_launch_from_storage(STORAGE)
+        EVENT_BUS.publish("daemon", kind="boot", launched=launched, stale_shadow_cleared=cleared)
+    except Exception:
+        logger.exception("daemon bootstrap failed; bots will not auto-trade until /daemon/deploy is called")
+
+
+@app.on_event("startup")
+def _mark_interrupted_jobs():
+    """Surface jobs that cannot survive a backend restart as stopped/cancelled."""
+    try:
+        stopped_shadow = SHADOW_REGISTRY.mark_interrupted_active()
+        if stopped_shadow:
+            logger.info("marked %d shadow job(s) interrupted by backend restart", stopped_shadow)
+    except Exception:
+        logger.exception("failed to mark interrupted shadow jobs")
+
+
+@app.on_event("shutdown")
+def _shutdown_daemon_hook():
+    """Stop daemon workers cleanly so uvicorn restarts don't leak threads."""
+    try:
+        JOB_MANAGER.mark_active_stopped("stopped because backend shutdown/reload occurred")
+    except Exception:
+        logger.exception("job shutdown marking error")
+    try:
+        shutdown_daemon()
+    except Exception:
+        logger.exception("daemon shutdown error")
+
+
+# ── Daemon control surface ────────────────────────────────────────────────
+# The execution daemon now owns live bot trading. The FE calls these endpoints
+# to deploy / stop / enable bots; the daemon publishes events on the bus and
+# the FE subscribes via /events.
+
+class DaemonDeployRequest(BaseModel):
+    bot_id: str
+    instrument_id: str
+    instrument_symbol: str
+    instrument_type: str = "fiat"
+    primary_timeframe: str = "M5"
+    scope: str = "day"
+    # Trade-mode fields (mirror the FE BotConfig). When ``scope_mode`` is
+    # 'manual' the daemon honours ``fixed_scope`` if it's in
+    # ``allowed_scopes``; otherwise the bot pauses. When 'auto', the daemon
+    # picks among ``allowed_scopes`` per tick using regime / equity / DD /
+    # volatility filters.
+    scope_mode: str = "manual"
+    fixed_scope: str | None = None
+    allowed_scopes: list[str] = ["scalp", "day", "swing"]
+    max_positions: int = 2
+    nn_feature_vector: list[float] = []
+    nn_detection_timeframe: str | None = None
+    nn_detection_bar_window: int | None = None
+    risk_per_trade_pct: float = 0.01
+    max_drawdown_pct: float = 0.15
+    use_kelly: bool = True
+    kelly_fraction: float = 0.25
+    max_correlated_exposure: float = 1.5
+    default_stop_loss_pct: float = 0.02
+    default_risk_reward_ratio: float = 2.0
+
+
+class DaemonPortfolioPush(BaseModel):
+    equity: float
+    drawdown_pct: float = 0.0
+    # Frontend can keep posting positions for display; daemon uses this snapshot
+    # to size the next entry.
+
+
+@app.get("/daemon/list")
+def daemon_list():
+    """List the bots the daemon is currently running."""
+    return {"bots": get_daemon().list()}
+
+
+@app.post("/daemon/deploy", dependencies=[Depends(require_api_key)])
+def daemon_deploy(req: DaemonDeployRequest):
+    cfg = BotRuntimeConfig(
+        bot_id=req.bot_id,
+        instrument_id=req.instrument_id,
+        instrument_symbol=req.instrument_symbol,
+        instrument_type=req.instrument_type,
+        primary_timeframe=req.primary_timeframe,
+        scope=req.scope,
+        scope_mode=req.scope_mode,
+        fixed_scope=req.fixed_scope,
+        allowed_scopes=list(req.allowed_scopes) if req.allowed_scopes else ["scalp", "day", "swing"],
+        max_positions=req.max_positions,
+        nn_feature_vector=list(req.nn_feature_vector),
+        nn_detection_timeframe=req.nn_detection_timeframe,
+        nn_detection_bar_window=req.nn_detection_bar_window,
+        risk_params=BotRiskParams(
+            risk_per_trade_pct=req.risk_per_trade_pct,
+            max_drawdown_pct=req.max_drawdown_pct,
+            use_kelly=req.use_kelly,
+            kelly_fraction=req.kelly_fraction,
+            max_correlated_exposure=req.max_correlated_exposure,
+            default_stop_loss_pct=req.default_stop_loss_pct,
+            default_risk_reward_ratio=req.default_risk_reward_ratio,
+        ),
+    )
+    get_daemon().deploy(cfg)
+    return {"deployed": cfg.bot_id}
+
+
+@app.post("/daemon/{bot_id}/stop", dependencies=[Depends(require_api_key)])
+def daemon_stop(bot_id: str):
+    if not get_daemon().stop(bot_id):
+        raise HTTPException(status_code=404, detail="bot not running")
+    return {"stopped": bot_id}
+
+
+@app.post("/daemon/{bot_id}/enable", dependencies=[Depends(require_api_key)])
+def daemon_enable(bot_id: str):
+    if not get_daemon().set_enabled(bot_id, True):
+        raise HTTPException(status_code=404, detail="bot not running")
+    return {"enabled": bot_id}
+
+
+@app.post("/daemon/{bot_id}/disable", dependencies=[Depends(require_api_key)])
+def daemon_disable(bot_id: str):
+    if not get_daemon().set_enabled(bot_id, False):
+        raise HTTPException(status_code=404, detail="bot not running")
+    return {"disabled": bot_id}
+
+
+@app.post("/daemon/portfolio", dependencies=[Depends(require_api_key)])
+def daemon_portfolio_push(req: DaemonPortfolioPush):
+    """Update the daemon's portfolio snapshot. Called by the FE whenever it
+    syncs balance from a broker so the daemon's sizing uses the freshest equity."""
+    set_portfolio_snapshot(req.equity, req.drawdown_pct)
+    return {"ok": True, "equity": req.equity}
+
+
+class DaemonSymbolMapRequest(BaseModel):
+    """Map instrument_id → broker symbol. Lets the daemon use the correct
+    Exness suffix (``EURUSDm`` / ``EURUSDz``) per account type rather than
+    guessing from the instrument id."""
+    symbols: dict[str, str]
+
+
+@app.post("/daemon/symbols", dependencies=[Depends(require_api_key)])
+def daemon_set_symbols(req: DaemonSymbolMapRequest):
+    set_instrument_symbol_map(req.symbols)
+    return {"ok": True, "count": len(req.symbols)}
+
+
+# ── SSE event stream ───────────────────────────────────────────────────────
+# The frontend opens GET /events once and receives every state-change event
+# (trades, bot ticks, jobs, shadow promotions, log lines) in real time. The
+# old model — frontend running its own execution loop — is replaced by this
+# single push channel.
+
+import asyncio  # late import is fine; uvicorn already pulls asyncio in
+
+
+@app.get("/events")
+async def sse_events(topics: str = ""):
+    """Server-Sent Events: subscribe to backend state changes.
+
+    ?topics=trade,bot,portfolio,shadow,job,log filters; empty = all.
+    """
+    topic_set = {t.strip() for t in topics.split(",") if t.strip()} or None
+    sub = EVENT_BUS.subscribe(topic_set)
+    queue_ref = sub.queue
+
+    async def stream():
+        # Initial nudge so the client knows the connection is live.
+        from .event_bus import Event
+        yield Event(topic="hello", payload={"connected": True}).to_sse()
+        try:
+            while True:
+                # Drain in small batches for low latency without busy-spinning.
+                try:
+                    ev = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: queue_ref.get(timeout=15.0)
+                    )
+                    yield ev.to_sse()
+                except Exception:
+                    # 15s heartbeat keeps proxies happy.
+                    yield ": heartbeat\n\n"
+        finally:
+            EVENT_BUS.unsubscribe(sub)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── Cross-request job registry ───────────────────────────────────────────
+# UI calls /jobs to see all in-flight backtests / research / shadow training
+# across sessions. /jobs/cancel sets the cooperative cancel token.
+
+@app.get("/jobs")
+def list_jobs(kind: str | None = None, active_only: bool = False):
+    """Return the registered jobs (queued/running/finished). Filter by kind/active."""
+    rows = JOB_MANAGER.list(kind=kind, active_only=active_only)
+    jobs = [r.to_dict() for r in rows]
+    if kind in (None, "shadow"):
+        jobs.extend(_shadow_jobs_as_job_records(active_only=active_only))
+    jobs.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return {"jobs": jobs}
+
+
+def _shadow_jobs_as_job_records(active_only: bool = False) -> list[dict]:
+    status_map = {
+        "queued": "queued",
+        "running": "running",
+        "ready": "succeeded",
+        "promoted": "succeeded",
+        "failed": "failed",
+        "aborted": "cancelled",
+    }
+    out: list[dict] = []
+    for row in SHADOW_REGISTRY.list_jobs():
+        raw_status = str(row.get("status") or "queued")
+        status = status_map.get(raw_status, "failed")
+        if active_only and status not in {"queued", "running"}:
+            continue
+        instrument_id = str(row.get("instrument_id") or "")
+        kind = str(row.get("kind") or "shadow")
+        progress = 100.0 if status in {"succeeded", "failed", "cancelled"} else (5.0 if status == "running" else 0.0)
+        out.append({
+            "job_id": str(row.get("job_id") or f"shadow-{instrument_id}"),
+            "kind": "shadow",
+            "title": f"shadow {kind} {instrument_id}".strip(),
+            "status": status,
+            "progress": progress,
+            "message": row.get("message") or raw_status,
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "created_at": row.get("started_at") or row.get("finished_at") or "",
+            "meta": {
+                "instrument": instrument_id,
+                "shadow_kind": kind,
+                "raw_status": raw_status,
+                "oos_accuracy": row.get("oos_accuracy"),
+                "parent_oos_accuracy": row.get("parent_oos_accuracy"),
+            },
+            "error": row.get("error"),
+        })
+    return out
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    rec = JOB_MANAGER.get(job_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    return rec.to_dict()
+
+
+@app.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_api_key)])
+def cancel_job(job_id: str):
+    ok = JOB_MANAGER.cancel(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="job not found or already finished")
+    return {"cancelled": True, "job_id": job_id}
+
+
+@app.get("/compute")
+def compute_info():
+    """Report resolved compute config so the UI can show GPU / worker usage."""
+    from .compute import get_compute_config
+    cfg = get_compute_config()
+    return {
+        "cpu_count": cfg.cpu_count,
+        "backtest_workers": cfg.backtest_workers,
+        "research_workers": cfg.research_workers,
+        "torch_num_threads": cfg.torch_num_threads,
+        "use_cuda": cfg.use_cuda,
+        "device": cfg.device_str,
+        "cuda_device_count": cfg.cuda_device_count,
+        "cuda_devices": cfg.cuda_devices,
+        "use_multi_gpu": cfg.use_multi_gpu,
+        "tf32": cfg.enable_tf32,
+        "dataloader_workers": cfg.dataloader_workers,
+        "pin_memory": cfg.pin_memory,
+        "shadow_workers": _DEFAULT_SHADOW_WORKERS,
+    }
 
 CHECKPOINT_DIR = Path(os.environ.get("CICADA_NN_CHECKPOINTS", "checkpoints"))
 STORAGE = StorageService(CHECKPOINT_DIR)
+SHADOW_REGISTRY = ShadowRegistry(CHECKPOINT_DIR)
+
+# Background-job executor for shadow training. Bounded so a flood of
+# retrain requests can't exhaust the machine.
+_DEFAULT_SHADOW_WORKERS = max(1, int(os.environ.get("CICADA_SHADOW_WORKERS", "2")))
+import concurrent.futures as _cf_mod  # late import to keep top short
+
+SHADOW_EXECUTOR = _cf_mod.ThreadPoolExecutor(
+    max_workers=_DEFAULT_SHADOW_WORKERS,
+    thread_name_prefix="cicada-shadow",
+)
 
 
 class BacktestResultItem(BaseModel):
@@ -97,6 +471,7 @@ class BuildResponse(BaseModel):
     oos_sample_count: int | None = None  # Number of validation samples used
     detection_timeframe: str | None = None  # When detection model: timeframe NN was trained on (for bar fetch at predict)
     detection_bar_window: int | None = None  # When detection model: bar window size (for bar_window at predict)
+    detection_models: dict[str, dict] | None = None  # timeframe -> detection model metadata
 
 
 class ClosedTradeItem(BaseModel):
@@ -138,6 +513,80 @@ class PredictResponse(BaseModel):
     tp_r: float = 2.0  # take profit as risk-reward ratio
     strategy_idx: int | None = None  # Selected strategy index
     strategy_id: str | None = None  # Selected strategy id (e.g. cp-fib-retracement)
+    # Safety flags so the daemon can refuse to act on degenerate models.
+    safe_to_use: bool = True
+    val_accuracy: float | None = None
+    inversion_score: float | None = None
+    warning: str | None = None
+
+
+def _load_detection_predictor(det_path: Path) -> dict[str, Any]:
+    """Load and cache the bar-level detection model for low-latency live ticks."""
+    key = str(det_path)
+    mtime = det_path.stat().st_mtime_ns
+    with _MODEL_CACHE_LOCK:
+        cached = _DETECTION_MODEL_CACHE.get(key)
+        if cached and cached.get("mtime") == mtime:
+            return cached
+
+    from .train_detection import StrategyDetectionMLPLegacy
+    from .model import build_detection_model_from_checkpoint
+
+    ckpt = torch.load(det_path, map_location=DEVICE, weights_only=True)
+    meta = ckpt.get("meta", {})
+    model_version = int(ckpt.get("model_version") or meta.get("model_version") or 0)
+    if model_version >= 3:
+        model = build_detection_model_from_checkpoint(ckpt).to(DEVICE)
+    else:
+        bar_window = int(meta.get("bar_window", 60))
+        dim = int(meta.get("bar_feature_dim", bar_window * 4))
+        model = StrategyDetectionMLPLegacy(input_dim=dim).to(DEVICE)
+    model.load_state_dict(ckpt["model_state"], strict=True)
+    model.eval()
+
+    loaded = {"mtime": mtime, "checkpoint": ckpt, "meta": meta, "model": model, "model_version": model_version}
+    with _MODEL_CACHE_LOCK:
+        _DETECTION_MODEL_CACHE[key] = loaded
+    return loaded
+
+
+def _load_tabular_predictor(pt_path: Path, meta_path: Path) -> dict[str, Any]:
+    """Load and cache the tabular bot model; invalidates when checkpoint/meta changes."""
+    key = str(pt_path)
+    pt_mtime = pt_path.stat().st_mtime_ns
+    meta_mtime = meta_path.stat().st_mtime_ns if meta_path.exists() else 0
+    with _MODEL_CACHE_LOCK:
+        cached = _TABULAR_MODEL_CACHE.get(key)
+        if cached and cached.get("pt_mtime") == pt_mtime and cached.get("meta_mtime") == meta_mtime:
+            return cached
+
+    checkpoint = torch.load(pt_path, map_location=DEVICE, weights_only=True)
+    from .model import build_model_from_checkpoint
+
+    model = build_model_from_checkpoint(checkpoint).to(DEVICE)
+    state = checkpoint["model_state"]
+    model.load_state_dict(state, strict=False)
+    model.eval()
+    meta: dict[str, Any] = {}
+    if meta_path.exists():
+        with open(meta_path) as mf:
+            meta = json.load(mf)
+    model_version = checkpoint.get("model_version", 1)
+    has_regression = model_version >= 2 or any(k.startswith("regression_head.") for k in state.keys())
+
+    loaded = {
+        "pt_mtime": pt_mtime,
+        "meta_mtime": meta_mtime,
+        "checkpoint": checkpoint,
+        "state": state,
+        "model": model,
+        "meta": meta,
+        "model_version": model_version,
+        "has_regression": has_regression,
+    }
+    with _MODEL_CACHE_LOCK:
+        _TABULAR_MODEL_CACHE[key] = loaded
+    return loaded
 
 
 @app.get("/")
@@ -160,10 +609,11 @@ def health():
         "service": "cicada-nn",
         "device": str(DEVICE),
         "cuda_available": torch.cuda.is_available(),
+        "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
     }
 
 
-@app.post("/build", response_model=BuildResponse)
+@app.post("/build", response_model=BuildResponse, dependencies=[Depends(require_api_key)])
 def build_bot(req: BuildRequest):
     """Train the instrument bot NN on provided backtest results. When bars are provided, trains detection model (NN recognizes strategy patterns)."""
     if not req.results:
@@ -186,28 +636,68 @@ def build_bot(req: BuildRequest):
         bars_by_key = {}
         for k, bar_list in req.bars.items():
             bars_by_key[k] = [b.model_dump() if hasattr(b, "model_dump") else dict(b) for b in bar_list]
-        try:
-            from .train_detection import train_detection
-            det_path, det_meta = train_detection(
-                bars_by_key, rows, instrument_id,
-                output_dir=str(CHECKPOINT_DIR), epochs=min(30, req.epochs), lr=req.lr,
-            )
-            # Detection model uses bar_window at predict, not feature_vector. Return zero vector for API shape.
-            # Predict handler checks det_path first and uses bars_to_features(bar_window) for inference.
+        from .train_detection import train_detection
+        detection_models: dict[str, dict] = {}
+        detection_errors: list[str] = []
+        for key in sorted(bars_by_key.keys()):
+            try:
+                key_inst, key_tf = key.split("|", 1)
+            except ValueError:
+                continue
+            if key_inst != instrument_id:
+                continue
+            rows_for_tf = [
+                r for r in rows
+                if r.get("instrumentId") == key_inst and str(r.get("timeframe") or "").upper() == key_tf.upper()
+            ] or [r for r in rows if r.get("instrumentId") == key_inst]
+            if not rows_for_tf:
+                continue
+            suffix = f"__{_safe_instrument_id(key_tf.upper())}"
+            try:
+                det_path, det_meta = train_detection(
+                    bars_by_key, rows_for_tf, instrument_id,
+                    output_dir=str(CHECKPOINT_DIR), epochs=min(30, req.epochs), lr=req.lr,
+                    checkpoint_suffix=suffix,
+                )
+                tf = str(det_meta.get("timeframe") or key_tf).upper()
+                detection_models[tf] = {
+                    "timeframe": tf,
+                    "scope": det_meta.get("scope"),
+                    "bar_window": det_meta.get("bar_window"),
+                    "checkpoint_path": det_path,
+                    "val_accuracy": det_meta.get("val_accuracy"),
+                    "num_samples": det_meta.get("num_samples"),
+                    "strategy_id": det_meta.get("strategy_id"),
+                    "model_version": 3,
+                }
+            except Exception as e:
+                detection_errors.append(f"{key}: {e}")
+        if detection_models:
+            manifest_path = CHECKPOINT_DIR / f"instrument_detection_{_safe_instrument_id(instrument_id)}_manifest.json"
+            with open(manifest_path, "w") as mf:
+                json.dump({
+                    "instrument_id": instrument_id,
+                    "trained_at_iso": datetime.now(timezone.utc).isoformat(),
+                    "models": detection_models,
+                }, mf, indent=2)
+            first_tf = sorted(detection_models.keys())[0]
+            first = detection_models[first_tf]
             feat_dim = 64
-            feature_vector = [0.0] * feat_dim  # Unused in detection mode; real features from bar_window at predict
+            feature_vector = [0.0] * feat_dim
             return BuildResponse(
                 success=True,
-                message=f"Detection model trained on {det_meta.get('num_samples', 0)} bars for {det_meta.get('strategy_id', '?')}",
-                checkpoint_path=det_path,
+                message=f"Detection models trained for {len(detection_models)} timeframe(s)"
+                    + (f" ({len(detection_errors)} skipped)" if detection_errors else ""),
+                checkpoint_path=first.get("checkpoint_path"),
                 feature_vector=feature_vector,
                 oos_accuracy=None,
-                oos_sample_count=det_meta.get("num_samples"),
-                detection_timeframe=det_meta.get("timeframe"),
-                detection_bar_window=det_meta.get("bar_window"),
+                oos_sample_count=first.get("num_samples"),
+                detection_timeframe=first.get("timeframe"),
+                detection_bar_window=first.get("bar_window"),
+                detection_models=detection_models,
             )
-        except Exception as e:
-            detection_error = str(e)
+        if detection_errors:
+            detection_error = "; ".join(detection_errors[:3])
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(rows, f)
@@ -264,13 +754,32 @@ def predict(req: PredictRequest):
     """
     safe_id = _safe_instrument_id(req.instrument_id)
     det_path = CHECKPOINT_DIR / f"instrument_detection_{safe_id}.pt"
+    manifest_path = CHECKPOINT_DIR / f"instrument_detection_{safe_id}_manifest.json"
+    if manifest_path.exists():
+        try:
+            with open(manifest_path) as mf:
+                manifest = json.load(mf)
+            model_info = (manifest.get("models") or {}).get(str(req.timeframe).upper())
+            model_path = model_info.get("checkpoint_path") if isinstance(model_info, dict) else None
+            if model_path:
+                candidate = Path(model_path)
+                if not candidate.exists() and not candidate.is_absolute():
+                    candidate = CHECKPOINT_DIR / candidate.name
+                if candidate.exists():
+                    det_path = candidate
+        except Exception:
+            logger.debug("failed to resolve detection manifest for %s", req.instrument_id, exc_info=True)
     detection_skip_detail: str | None = None
 
-    # Detection mode: bar-level model recognizes strategy signals
+    # Detection mode: bar-level model consumes raw bars and predicts future direction.
     if det_path.exists():
-        from .train_detection import StrategyDetectionNN, bars_to_features
-        ckpt = torch.load(det_path, map_location=DEVICE, weights_only=True)
-        meta = ckpt.get("meta", {})
+        from .train_detection import bars_to_features
+        from .bar_features import BarFeatureConfig, window_features
+
+        predictor = _load_detection_predictor(det_path)
+        ckpt = predictor["checkpoint"]
+        meta = predictor["meta"]
+        model = predictor["model"]
         bar_window = meta.get("bar_window", 60)
         if not req.bar_window or len(req.bar_window) < bar_window:
             detection_skip_detail = (
@@ -280,20 +789,95 @@ def predict(req: PredictRequest):
         else:
             try:
                 bars = [b.model_dump() if hasattr(b, "model_dump") else dict(b) for b in req.bar_window]
+                model_version = int(ckpt.get("model_version") or meta.get("model_version") or 0)
+
+                if model_version >= 3:
+                    # V3: scale-invariant features + conv/attention tower with
+                    # calibration & MC-dropout uncertainty.
+                    ctx_dims = int(meta.get("context_features", 4))
+                    feat_cfg = BarFeatureConfig(
+                        window=bar_window, include_context=ctx_dims > 0
+                    )
+                    feat = window_features(bars, len(bars) - 1, feat_cfg)
+                    x = torch.from_numpy(feat.astype(np.float32)).unsqueeze(0).to(DEVICE)
+                    with _MODEL_CACHE_LOCK:
+                        with torch.no_grad():
+                            logits, reg = model.forward_with_regression(x)
+                            probs = torch.softmax(logits, dim=1)
+                            pred = int(logits.argmax(dim=1).item())
+                            conf = float(probs[0, pred].item())
+                            raw = reg[0].detach().cpu().numpy()
+                        # MC-dropout uncertainty is useful, but live ticks must
+                        # stay responsive. Keep this sample count small and
+                        # configurable instead of doing 16 passes every tick.
+                        if _DETECTION_MC_SAMPLES > 0:
+                            try:
+                                model.train()
+                                mean_probs, entropy = model.forward_mc(x, samples=_DETECTION_MC_SAMPLES)
+                                model.eval()
+                                # Penalise confidence when predictive entropy is high.
+                                entropy_pct = float(entropy[0].item()) / float(np.log(3))
+                                conf = float(
+                                    np.clip(conf * (1.0 - 0.5 * entropy_pct), 0.05, 0.99)
+                                )
+                            except Exception:
+                                model.eval()
+                                pass  # MC dropout is best-effort; keep raw conf.
+
+                    # V3 labels: 0=short, 1=long, 2=neutral (mirrors labeling.py).
+                    # Map to response actions: 0=long, 1=short, 2=neutral.
+                    action = 1 if pred == 0 else (0 if pred == 1 else 2)
+
+                    # ── Safety floor on per-TF detection model ──────────────
+                    # When the trained model failed to clear the random-baseline
+                    # promotion floor we *do not* let it trade. The action is
+                    # forced to NEUTRAL and ``safe_to_use=False`` is returned so
+                    # the daemon can short-circuit and surface a warning. This
+                    # is the gate that catches the "val_acc=0.7%" failure mode
+                    # the operator hit in production.
+                    safe_flag = bool(meta.get("safe_to_use", True))
+                    val_acc = meta.get("val_accuracy")
+                    inversion = meta.get("inversion_score")
+                    warning_msg: str | None = None
+                    if not safe_flag:
+                        warning_msg = (
+                            f"Model rejected: val_accuracy={val_acc} below promotion floor "
+                            f"{meta.get('promotion_floor')}. Re-train this bot before trading."
+                        )
+                        action = 2  # neutral
+
+                    actions_list = [action] * 5
+                    size_mult = float(0.5 + 1.5 * raw[0])
+                    sl_pct = float(0.01 + 0.04 * raw[1])
+                    tp_r = float(1.0 + 2.0 * raw[2])
+                    strategy_id = meta.get("strategy_id")
+                    return PredictResponse(
+                        actions=actions_list,
+                        confidence=round(conf, 4),
+                        size_multiplier=round(size_mult, 4),
+                        sl_pct=round(sl_pct, 4),
+                        tp_r=round(tp_r, 4),
+                        strategy_idx=0,
+                        strategy_id=strategy_id,
+                        safe_to_use=safe_flag,
+                        val_accuracy=val_acc,
+                        inversion_score=inversion,
+                        warning=warning_msg,
+                    )
+
+                # Legacy MLP detection (model_version < 3): keep loading for
+                # previously-trained checkpoints.
                 feat = bars_to_features(bars, len(bars) - 1, bar_window)
-                dim = meta.get("bar_feature_dim", bar_window * 4)
-                model = StrategyDetectionNN(input_dim=dim).to(DEVICE)
-                model.load_state_dict(ckpt["model_state"], strict=True)
-                model.eval()
                 x = torch.from_numpy(feat.astype(np.float32)).unsqueeze(0).to(DEVICE)
-                with torch.no_grad():
-                    logits = model(x)
-                    probs = torch.softmax(logits, dim=1)
-                    pred = logits.argmax(dim=1).item()
-                    conf = probs[0, pred].item()
-                # Class 0=neutral, 1=short, 2=long -> actions: 0=long, 1=short, 2=neutral
+                with _MODEL_CACHE_LOCK:
+                    with torch.no_grad():
+                        logits = model(x)
+                        probs = torch.softmax(logits, dim=1)
+                        pred = int(logits.argmax(dim=1).item())
+                        conf = float(probs[0, pred].item())
+                # Legacy labels: 0=neutral, 1=short, 2=long -> actions: 0=long, 1=short, 2=neutral.
                 action = 2 if pred == 0 else (1 if pred == 1 else 0)
-                actions_list = [action] * 5  # Same for all styles
+                actions_list = [action] * 5
                 strategy_id = meta.get("strategy_id")
                 return PredictResponse(
                     actions=actions_list,
@@ -319,25 +903,19 @@ def predict(req: PredictRequest):
             detail=f"No model for instrument {req.instrument_id}. Build that instrument's bot first.",
         )
     try:
-        checkpoint = torch.load(pt_path, map_location=DEVICE, weights_only=True)
+        predictor = _load_tabular_predictor(pt_path, meta_path)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Checkpoint load failed: {e}") from e
-    from .model import build_model_from_checkpoint
-    model = build_model_from_checkpoint(checkpoint).to(DEVICE)
-    state = checkpoint["model_state"]
-    model.load_state_dict(state, strict=False)
-    model.eval()
-
-    model_version = checkpoint.get("model_version", 1)
-    has_regression = model_version >= 2 or any(k.startswith("regression_head.") for k in state.keys())
+    checkpoint = predictor["checkpoint"]
+    model = predictor["model"]
+    has_regression = bool(predictor["has_regression"])
+    meta = predictor["meta"]
 
     # Regime and timeframe one-hot from saved mappings (same order as training)
     regime_idx = 0
     timeframe_idx = 0
     strategy_ids: list[str] = []
-    if meta_path.exists():
-        with open(meta_path) as mf:
-            meta = json.load(mf)
+    if meta:
         r2i = meta.get("regime_to_idx") or {}
         t2i = meta.get("timeframe_to_idx") or {}
         regime_idx = r2i.get(req.regime, r2i.get("unknown", 0))
@@ -347,8 +925,10 @@ def predict(req: PredictRequest):
     regime_onehot = np.zeros(NUM_REGIMES, dtype=np.float32)
     if regime_idx < NUM_REGIMES:
         regime_onehot[regime_idx] = 1.0
-    if req.regime_confidence is not None and req.regime_confidence > 0:
-        regime_onehot = (regime_onehot * np.clip(req.regime_confidence, 0, 1)).astype(np.float32)
+    # Regime one-hot is never scaled at serve time. Training always saw
+    # {0,1}-valued one-hots, so scaling here used to introduce a silent
+    # train-serve mismatch that degraded inference. We honour regime_confidence
+    # elsewhere (feature blending and post-hoc confidence adjustment) instead.
 
     timeframe_onehot = np.zeros(NUM_TIMEFRAMES, dtype=np.float32)
     if timeframe_idx < NUM_TIMEFRAMES:
@@ -408,6 +988,10 @@ def predict(req: PredictRequest):
                 actions_list = actions[0].tolist()
                 if strategy_idx is not None and 0 <= strategy_idx < len(strategy_ids):
                     strategy_id = strategy_ids[strategy_idx]
+                # Downweight confidence when the regime detector is unsure.
+                # We do this *after* the network runs, so training stays honest.
+                if req.regime_confidence is not None and 0.0 < req.regime_confidence < 1.0:
+                    confidence = float(np.clip(confidence * req.regime_confidence, 0.0, 1.0))
                 return PredictResponse(
                     actions=actions_list,
                     confidence=round(confidence, 4),
@@ -422,6 +1006,182 @@ def predict(req: PredictRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference failed: {e}") from e
     return PredictResponse(actions=actions_list)
+
+
+# ---------- Shadow training + hot-swap ----------
+#
+# The frontend kicks off a retrain while the bot is still executing: training
+# runs in a thread-pool, writes to a shadow checkpoint, and only after passing
+# the promotion gate is the live checkpoint atomically replaced. Execution
+# picks up the new model on the next /predict call without any downtime.
+
+class ShadowTrainRequest(BaseModel):
+    """Request to start a shadow-training job for a deployed bot."""
+    instrument_id: str
+    results: list[BacktestResultItem]
+    instrument_types: dict[str, str] = {}
+    epochs: int = 30
+    lr: float = 1e-3
+    # "tabular" (meta-selector) or "detection" (bar-window direction model).
+    kind: str = "detection"
+    # Bars required for detection kind; key "instrumentId|timeframe" -> bars.
+    bars: dict[str, list[BarItem]] | None = None
+
+
+class ShadowTrainResponse(BaseModel):
+    job_id: str
+    status: str
+    instrument_id: str
+    kind: str
+    message: str | None = None
+
+
+class ShadowPromoteRequest(BaseModel):
+    job_id: str
+    # Optional gate overrides per-instrument; values are clamped server-side.
+    min_oos_accuracy: float | None = None
+    accuracy_tolerance: float | None = None
+    warmup_seconds: float | None = None
+
+
+def _run_shadow_job_async(
+    kind: str,
+    instrument_id: str,
+    rows: list[dict],
+    instrument_types: dict[str, str],
+    bars_by_key: dict[str, list[dict]] | None,
+    epochs: int,
+    lr: float,
+) -> None:
+    """Runs inside the ThreadPoolExecutor; exceptions are recorded in the registry."""
+    try:
+        if kind == "detection":
+            if not bars_by_key:
+                raise ValueError("Detection shadow training requires bars")
+            shadow_train_detection(
+                registry=SHADOW_REGISTRY,
+                checkpoint_dir=CHECKPOINT_DIR,
+                instrument_id=instrument_id,
+                bars_by_key=bars_by_key,
+                rows=rows,
+                epochs=epochs,
+                lr=lr,
+            )
+        else:
+            shadow_train_tabular(
+                registry=SHADOW_REGISTRY,
+                checkpoint_dir=CHECKPOINT_DIR,
+                instrument_id=instrument_id,
+                rows=rows,
+                instrument_types=instrument_types,
+                epochs=epochs,
+                lr=lr,
+            )
+    except Exception:
+        # start_shadow_training already records the failure on the registry.
+        logger.exception("shadow job background failure")
+
+
+@app.post("/shadow/train", response_model=ShadowTrainResponse, dependencies=[Depends(require_api_key)])
+def shadow_train(req: ShadowTrainRequest):
+    """Kick off a shadow training job; returns immediately with a job id."""
+    rows = [r.model_dump() for r in req.results]
+    if not rows:
+        raise HTTPException(status_code=400, detail="results must be non-empty")
+    bars_by_key: dict[str, list[dict]] | None = None
+    if req.bars:
+        bars_by_key = {
+            k: [b.model_dump() for b in v] for k, v in req.bars.items()
+        }
+    # Seed a 'queued' row so the UI can display immediately even before the
+    # worker picks up the job.
+    from .shadow_training import ShadowJobState
+    seed = ShadowJobState(
+        job_id=f"shadow-{req.instrument_id}-{int(__import__('datetime').datetime.now(__import__('datetime').timezone.utc).timestamp())}",
+        instrument_id=req.instrument_id,
+        kind=req.kind,
+        status="queued",
+        started_at=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    SHADOW_REGISTRY.upsert(seed)
+    SHADOW_EXECUTOR.submit(
+        _run_shadow_job_async,
+        req.kind,
+        req.instrument_id,
+        rows,
+        req.instrument_types,
+        bars_by_key,
+        req.epochs,
+        req.lr,
+    )
+    return ShadowTrainResponse(
+        job_id=seed.job_id,
+        status=seed.status,
+        instrument_id=seed.instrument_id,
+        kind=seed.kind,
+        message="queued",
+    )
+
+
+@app.get("/shadow/jobs")
+def shadow_jobs(instrument_id: str | None = None):
+    """List shadow training jobs (optionally filtered to one instrument)."""
+    return {"jobs": SHADOW_REGISTRY.list_jobs(instrument_id)}
+
+
+@app.post("/shadow/promote", dependencies=[Depends(require_api_key)])
+def shadow_promote(req: ShadowPromoteRequest):
+    """Apply safety gates and atomically promote a shadow checkpoint."""
+    job = SHADOW_REGISTRY.get(req.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    gate = PromotionGate(
+        min_oos_accuracy=req.min_oos_accuracy if req.min_oos_accuracy is not None else 0.40,
+        accuracy_tolerance=req.accuracy_tolerance if req.accuracy_tolerance is not None else 0.02,
+        warmup_seconds=req.warmup_seconds if req.warmup_seconds is not None else 60.0,
+    )
+    ok, reason = can_promote_shadow(job, gate=gate)
+    if not ok:
+        return {"promoted": False, "reason": reason}
+    ok, reason = promote_shadow_atomically(CHECKPOINT_DIR, job["instrument_id"], job["kind"])
+    if not ok:
+        return {"promoted": False, "reason": reason}
+    # Reflect promotion in registry for the UI.
+    from .shadow_training import ShadowJobState
+    promoted = ShadowJobState(
+        job_id=job["job_id"],
+        instrument_id=job["instrument_id"],
+        kind=job["kind"],
+        status="promoted",
+        started_at=job["started_at"],
+        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z") if False else job.get("finished_at"),
+        oos_accuracy=job.get("oos_accuracy"),
+        parent_oos_accuracy=job.get("parent_oos_accuracy"),
+        message="promoted",
+    )
+    SHADOW_REGISTRY.upsert(promoted)
+    return {"promoted": True, "reason": reason, "job_id": job["job_id"]}
+
+
+@app.post("/shadow/abort", dependencies=[Depends(require_api_key)])
+def shadow_abort(req: ShadowPromoteRequest):
+    """Abort a shadow job; removes artefacts and marks the record."""
+    job = SHADOW_REGISTRY.get(req.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    abort_shadow(CHECKPOINT_DIR, job["instrument_id"], job["kind"])
+    from .shadow_training import ShadowJobState
+    aborted = ShadowJobState(
+        job_id=job["job_id"],
+        instrument_id=job["instrument_id"],
+        kind=job["kind"],
+        status="aborted",
+        started_at=job["started_at"],
+        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z") if False else job.get("finished_at"),
+        message="aborted via API",
+    )
+    SHADOW_REGISTRY.upsert(aborted)
+    return {"aborted": True, "job_id": job["job_id"]}
 
 
 # ---------- Bots: persist bot configs for restore across sessions/devices ----------
@@ -443,7 +1203,7 @@ def get_bots():
     return {"bots": _load_bots()}
 
 
-@app.post("/bots")
+@app.post("/bots", dependencies=[Depends(require_api_key)])
 def post_bots(bots: list[dict] = Body(...)):
     """Save bot configs. Called by frontend after build/deploy/update so bots persist on backend."""
     if not isinstance(bots, list):
@@ -505,7 +1265,7 @@ def get_positions():
     return _load_positions()
 
 
-@app.post("/positions")
+@app.post("/positions", dependencies=[Depends(require_api_key)])
 def post_positions(payload: dict = Body(...)):
     """Save positions, closed trades, balance, and P/L. Called by frontend on persist for backend backup."""
     positions = payload.get("positions", [])
@@ -524,7 +1284,7 @@ def get_state():
     return {"state": _load_app_state()}
 
 
-@app.post("/state")
+@app.post("/state", dependencies=[Depends(require_api_key)])
 def post_state(payload: dict = Body(...)):
     """Save frontend app snapshot to backend filesystem."""
     if not isinstance(payload, dict):
@@ -540,7 +1300,7 @@ def get_settings():
     return {"settings": data if isinstance(data, dict) else {}}
 
 
-@app.post("/settings")
+@app.post("/settings", dependencies=[Depends(require_api_key)])
 def post_settings(payload: dict = Body(...)):
     """Save backend settings object (used to avoid browser localStorage)."""
     if not isinstance(payload, dict):
@@ -583,7 +1343,7 @@ def _save_execution_log(events: list[dict]) -> None:
     STORAGE.execution_log.write(events[-EXECUTION_LOG_MAX:])
 
 
-@app.post("/execution-log/append")
+@app.post("/execution-log/append", dependencies=[Depends(require_api_key)])
 def execution_log_append(req: ExecutionLogAppendRequest):
     """Append bot execution events. Used by frontend to persist lookback data."""
     if not req.events:
@@ -636,11 +1396,37 @@ def mt5_connect(req: Mt5ConnectRequest):
 
 @app.get("/mt5/status")
 def mt5_status():
-    """Return whether the backend is currently connected to MT5."""
+    """Return whether the backend is currently connected to MT5.
+
+    Includes structured health: package install, last-error, balance/equity
+    snapshot when connected, and ``has_credentials`` so the FE can offer a
+    one-click reconnect after a transient drop.
+    """
     return {
         "mt5_available": mt5_client.MT5_AVAILABLE,
         "connected": mt5_client.is_connected(),
+        **mt5_client.connection_status(),
     }
+
+
+class Mt5ReconnectResponse(BaseModel):
+    connected: bool
+    message: str
+    account: dict | None = None
+
+
+@app.post("/mt5/reconnect", response_model=Mt5ReconnectResponse, dependencies=[Depends(require_api_key)])
+def mt5_reconnect():
+    """Reconnect to MT5 using the credentials cached at the previous /mt5/connect.
+
+    Convenient when the broker drops the link mid-session and the FE doesn't
+    want to prompt the user for credentials again. Returns the same shape as
+    /mt5/connect.
+    """
+    success, data = mt5_client.reconnect()
+    if success:
+        return Mt5ReconnectResponse(connected=True, message="Reconnected to MT5", account=data)
+    return Mt5ReconnectResponse(connected=False, message=data.get("error", "Reconnect failed"))
 
 
 @app.get("/mt5/account")
@@ -721,6 +1507,13 @@ class BacktestRunRequest(BaseModel):
     regime_tunes: dict[str, dict[str, float]] | None = None
     # None = auto: use HTF-mapped regime when HTF bars present (key instrumentId|HTF); False = LTF regime only.
     prefer_htf_regime: bool | None = None
+    # Optional: instrumentId -> instrument type; enables per-type cost model.
+    instrument_types: dict[str, str] = {}
+    # When true, fan jobs out to a process pool (see compute.py). Falls back
+    # to serial when true but the job count is too small to amortise.
+    parallel: bool = True
+    # Cap worker count for this specific request (0 = use server default).
+    workers: int = 0
 
 
 @app.post("/backtest")
@@ -795,6 +1588,7 @@ def backtest_run(req: BacktestRunRequest):
         param_combos_limit=normalize_param_combos_limit(req.param_combos_limit),
         regime_tunes=getattr(req, "regime_tunes", None) or None,
         prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
+        instrument_types=getattr(req, "instrument_types", None) or None,
     )
     # Add id for frontend BacktestResultRow
     import uuid
@@ -861,31 +1655,83 @@ def backtest_run_stream(req: BacktestRunRequest):
     if req.slippage_pct is not None:
         backtest_config["slippage_pct"] = req.slippage_pct
 
+    job = JOB_MANAGER.create(
+        kind="backtest",
+        title=f"backtest {len(req.instrumentIds)}×{len(req.strategyIds)}×{len(timeframes)}×{len(regimes)}",
+        meta={
+            "instruments": req.instrumentIds,
+            "strategies": req.strategyIds,
+            "timeframes": timeframes,
+            "regimes": regimes,
+            "parallel": bool(getattr(req, "parallel", True)),
+        },
+    )
+    JOB_MANAGER.mark_running(job.job_id)
+
     def generate():
         import uuid
+        from .compute import get_compute_config
+        from .backtest_parallel import run_backtest_parallel
         results: list[dict] = []
+        # Parallel path requires bars to be provided (workers don't hit MT5).
+        use_parallel = bool(getattr(req, "parallel", True)) and bool(req.bars)
+        max_workers = int(getattr(req, "workers", 0) or 0) or get_compute_config().backtest_workers
+        # Emit the job id so the client can call /jobs/{id}/cancel.
+        yield json.dumps({"type": "job", "job_id": job.job_id}) + "\n"
         try:
-            for row, completed, total in run_server_backtest_stream(
-                instrument_ids=req.instrumentIds,
-                strategy_ids=req.strategyIds,
-                strategy_names=req.strategy_names,
-                timeframes=timeframes,
-                regimes=regimes,
-                instrument_symbols=req.instrument_symbols,
-                date_from=req.dateFrom or "",
-                date_to=req.dateTo or "",
-                bars=req.bars or {},
-                instrument_spreads=req.instrument_spreads or {},
-                backtest_config=backtest_config or None,
-                instrument_risk_overrides=req.instrument_risk_overrides or None,
-                job_risk_overrides=getattr(req, "job_risk_overrides", None) or None,
-                param_combos_limit=normalize_param_combos_limit(req.param_combos_limit),
-                regime_tunes=getattr(req, "regime_tunes", None) or None,
-                prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
-            ):
+            job_stream = (
+                run_backtest_parallel(
+                    instrument_ids=req.instrumentIds,
+                    strategy_ids=req.strategyIds,
+                    strategy_names=req.strategy_names,
+                    timeframes=timeframes,
+                    regimes=regimes,
+                    instrument_symbols=req.instrument_symbols,
+                    bars=req.bars or {},
+                    instrument_spreads=req.instrument_spreads or {},
+                    backtest_config=backtest_config or None,
+                    instrument_risk_overrides=req.instrument_risk_overrides or None,
+                    job_risk_overrides=getattr(req, "job_risk_overrides", None) or None,
+                    param_combos_limit=normalize_param_combos_limit(req.param_combos_limit),
+                    regime_tunes=getattr(req, "regime_tunes", None) or None,
+                    prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
+                    instrument_types=getattr(req, "instrument_types", None) or None,
+                    max_workers=max_workers,
+                )
+                if use_parallel
+                else run_server_backtest_stream(
+                    instrument_ids=req.instrumentIds,
+                    strategy_ids=req.strategyIds,
+                    strategy_names=req.strategy_names,
+                    timeframes=timeframes,
+                    regimes=regimes,
+                    instrument_symbols=req.instrument_symbols,
+                    date_from=req.dateFrom or "",
+                    date_to=req.dateTo or "",
+                    bars=req.bars or {},
+                    instrument_spreads=req.instrument_spreads or {},
+                    backtest_config=backtest_config or None,
+                    instrument_risk_overrides=req.instrument_risk_overrides or None,
+                    job_risk_overrides=getattr(req, "job_risk_overrides", None) or None,
+                    param_combos_limit=normalize_param_combos_limit(req.param_combos_limit),
+                    regime_tunes=getattr(req, "regime_tunes", None) or None,
+                    prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
+                    instrument_types=getattr(req, "instrument_types", None) or None,
+                )
+            )
+            for row, completed, total in job_stream:
+                if JOB_MANAGER.should_cancel(job.job_id):
+                    JOB_MANAGER.mark_done(
+                        job.job_id, succeeded=False, message="cancelled by client"
+                    )
+                    yield json.dumps({"type": "cancelled", "results": results}) + "\n"
+                    return
                 row["id"] = f"bt-server-{uuid.uuid4().hex[:12]}"
                 results.append(row)
                 progress = int((completed / total) * 100) if total > 0 else 100
+                JOB_MANAGER.update_progress(
+                    job.job_id, progress, f"{completed}/{total}"
+                )
                 yield json.dumps({
                     "type": "progress",
                     "completed": completed,
@@ -900,8 +1746,10 @@ def backtest_run_stream(req: BacktestRunRequest):
                     "total": total,
                     "progress": progress,
                 }) + "\n"
+            JOB_MANAGER.mark_done(job.job_id, succeeded=True, message=f"{len(results)} rows")
             yield json.dumps({"type": "done", "results": results, "status": "completed"}) + "\n"
         except Exception as e:
+            JOB_MANAGER.mark_done(job.job_id, succeeded=False, error=str(e))
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
@@ -998,25 +1846,54 @@ def research_grid_stream(req: ResearchGridRequest):
             detail=f"Insufficient bars: {details}. Process halted — no inference or skip.",
         )
 
+    job = JOB_MANAGER.create(
+        kind="research",
+        title=f"research grid {len(req.instrumentIds)}×{len(req.strategyIds)}",
+        meta={
+            "instruments": req.instrumentIds,
+            "strategies": req.strategyIds,
+            "timeframes": timeframes,
+            "robust": bool(req.robust_mode),
+        },
+    )
+    JOB_MANAGER.mark_running(job.job_id)
+
     def generate():
-        for chunk in run_grid_research_with_progress(
-            instrument_ids=req.instrumentIds,
-            strategy_ids=req.strategyIds,
-            strategy_names=req.strategy_names,
-            timeframes=timeframes,
-            instrument_symbols=req.instrument_symbols,
-            bars=bars,
-            instrument_spreads=req.instrument_spreads or {},
-            regimes=req.regimes or None,
-            regime_grid_max=max(1, req.regime_grid_max),
-            param_tune_max_strat=max(1, req.param_tune_max_strat),
-            param_tune_max_risk=max(1, req.param_tune_max_risk),
-            date_from=req.dateFrom or "",
-            date_to=req.dateTo or "",
-            robust_mode=req.robust_mode,
-            calibration_hints=req.calibration_hints or None,
-        ):
-            yield json.dumps(chunk) + "\n"
+        # Emit job id first so the UI can wire its cancel button.
+        yield json.dumps({"type": "job", "job_id": job.job_id}) + "\n"
+        try:
+            for chunk in run_grid_research_with_progress(
+                instrument_ids=req.instrumentIds,
+                strategy_ids=req.strategyIds,
+                strategy_names=req.strategy_names,
+                timeframes=timeframes,
+                instrument_symbols=req.instrument_symbols,
+                bars=bars,
+                instrument_spreads=req.instrument_spreads or {},
+                regimes=req.regimes or None,
+                regime_grid_max=max(1, req.regime_grid_max),
+                param_tune_max_strat=max(1, req.param_tune_max_strat),
+                param_tune_max_risk=max(1, req.param_tune_max_risk),
+                date_from=req.dateFrom or "",
+                date_to=req.dateTo or "",
+                robust_mode=req.robust_mode,
+                calibration_hints=req.calibration_hints or None,
+                job_id=job.job_id,
+            ):
+                if JOB_MANAGER.should_cancel(job.job_id):
+                    JOB_MANAGER.mark_done(job.job_id, succeeded=False, message="cancelled by client")
+                    yield json.dumps({"type": "cancelled"}) + "\n"
+                    return
+                # Heuristic progress from the chunk's percent if present.
+                if isinstance(chunk, dict) and "progress" in chunk:
+                    JOB_MANAGER.update_progress(
+                        job.job_id, float(chunk.get("progress") or 0), str(chunk.get("message") or "")
+                    )
+                yield json.dumps(chunk) + "\n"
+            JOB_MANAGER.mark_done(job.job_id, succeeded=True)
+        except Exception as e:
+            JOB_MANAGER.mark_done(job.job_id, succeeded=False, error=str(e))
+            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
 
     return StreamingResponse(
         generate(),
@@ -1152,7 +2029,7 @@ class Mt5ClosePartialRequest(BaseModel):
     position_type: int  # 0=buy, 1=sell
 
 
-@app.post("/mt5/close-partial")
+@app.post("/mt5/close-partial", dependencies=[Depends(require_api_key)])
 def mt5_close_partial(req: Mt5ClosePartialRequest):
     """
     Partially close an MT5 position by ticket.
@@ -1171,7 +2048,7 @@ def mt5_close_partial(req: Mt5ClosePartialRequest):
     raise HTTPException(status_code=400, detail=result.get("error", "Close failed"))
 
 
-@app.post("/mt5/order")
+@app.post("/mt5/order", dependencies=[Depends(require_api_key)])
 def mt5_order(req: Mt5OrderRequest):
     """
     Place a market order via MT5. Requires MT5 connected.

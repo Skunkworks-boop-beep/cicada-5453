@@ -17,6 +17,11 @@ from .spread_utils import spread_points_to_fraction as spread_points_to_fraction
 from .grid_config import normalize_param_combos_limit
 from .strategy_params import get_param_combinations
 from .multi_timeframe import build_htf_index_for_each_ltf_bar, get_higher_timeframe
+from .transaction_costs import (
+    commission,
+    fill_slippage_pct,
+    swap_accrual,
+)
 
 MIN_BARS_REQUIRED_BACKTEST = 10  # Halt if fewer; no inference or skip
 
@@ -82,6 +87,7 @@ def _run_single(
     htf_bars: list[dict[str, Any]] | None = None,
     htf_index_by_ltf: list[int] | None = None,
     prefer_htf_regime: bool | None = None,
+    instrument_type: str = "fiat",
 ) -> dict[str, Any]:
     """Run backtest using get_signal (RSI, MACD, FVG, BOS, etc.) — real strategy logic, no momentum fallback."""
     scope = TF_TO_SCOPE.get(timeframe.upper(), "day")
@@ -198,8 +204,10 @@ def _run_single(
                     exit_reason = "signal"
 
             if exit_price is not None:
-                # Spread/slippage: at signal/max_hold exit use close ± spread and slippage; at stop/target apply slippage only.
-                slippage = c * slippage_pct
+                # Realistic fills: spread on signal/max-hold exits, amplified
+                # slippage on stop/target fills (per `transaction_costs`).
+                slip_pct = fill_slippage_pct(slippage_pct, instrument_type, exit_reason)
+                slippage = c * slip_pct
                 if exit_reason in ("signal", "max_hold"):
                     if side == 1:
                         exit_price = c * (1 - spread) - slippage
@@ -211,11 +219,23 @@ def _run_single(
                     else:
                         exit_price = exit_price + slippage
 
-                pnl = (exit_price - entry) * size if side == 1 else (entry - exit_price) * size
+                gross_pnl = (exit_price - entry) * size if side == 1 else (entry - exit_price) * size
+                # Subtract swap + commission from realised P&L.
+                hold = i - position["entry_bar"]
+                notional = entry * size
+                swap = swap_accrual(notional, instrument_type, hold, timeframe, side)
+                comm = commission(notional, instrument_type)
+                pnl = gross_pnl + swap - comm
                 pnl_pct = (pnl / (entry * size)) * 100 if entry and size else 0
                 equity += pnl
-                hold = i - position["entry_bar"]
-                trades.append({"pnl": pnl, "pnl_pct": pnl_pct, "hold_bars": hold})
+                trades.append({
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "hold_bars": hold,
+                    "gross_pnl": gross_pnl,
+                    "swap": swap,
+                    "commission": comm,
+                })
                 if equity > peak:
                     peak = equity
                 dd = (peak - equity) / peak if peak and peak > 0 else 0
@@ -339,6 +359,21 @@ def _normalize_bars(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _infer_instrument_type(instrument_id: str, symbol: str) -> str:
+    """Best-effort instrument-type inference used when the caller doesn't
+    supply ``instrument_types``. Frontend callers always send the map, this
+    keeps standalone backtests robust."""
+    iid = (instrument_id or "").lower()
+    sym = (symbol or "").upper()
+    if "deriv" in iid or iid.startswith("inst-deriv") or sym.startswith(("R_", "BOOM", "CRASH", "1HZ", "JUMP_")):
+        return "synthetic_deriv"
+    if iid.startswith(("inst-btc", "inst-eth", "inst-sol", "inst-xrp", "inst-doge")):
+        return "crypto"
+    if sym.replace("/", "") in {"US30", "US500", "USTEC", "AUS200", "UK100", "DE30", "FR40", "JP225", "HK50", "STOXX50"}:
+        return "indices_exness"
+    return "fiat"
+
+
 def run_backtest(
     instrument_ids: list[str],
     strategy_ids: list[str],
@@ -356,6 +391,7 @@ def run_backtest(
     param_combos_limit: int | None = None,
     regime_tunes: dict[str, dict[str, Any]] | None = None,
     prefer_htf_regime: bool | None = None,
+    instrument_types: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Run server-side backtest: for each (instrument, strategy, tf, regime) load OHLC from
@@ -363,7 +399,10 @@ def run_backtest(
     BacktestResultRow-like dicts (with id added by API).
     """
     results: list[dict[str, Any]] = []
-    count = 10_000  # bars per request
+    # Bars-per-request when we fall back to MT5 (no bars in payload). Keep in
+    # sync with the frontend's BACKTEST_FULL_HISTORY_BARS so the BE doesn't
+    # silently truncate to 10 k while the FE expects 50 k.
+    count = 50_000  # bars per request
     bars_provided = bars or {}
     spreads = instrument_spreads or {}
 
@@ -456,6 +495,7 @@ def run_backtest(
                             if len(htf_bars_norm) >= 2:
                                 htf_index_by_ltf = build_htf_index_for_each_ltf_bar(ohlc_bars, htf_bars_norm)
 
+                    inst_type = (instrument_types or {}).get(inst_id) or _infer_instrument_type(inst_id, symbol)
                     for regime in regimes:
                         row = _run_single(
                             inst_id, symbol, strategy_id, name, tf, regime, ohlc_bars,
@@ -464,6 +504,7 @@ def run_backtest(
                             htf_bars=htf_bars_norm,
                             htf_index_by_ltf=htf_index_by_ltf,
                             prefer_htf_regime=prefer_htf_regime,
+                            instrument_type=inst_type,
                         )
                         results.append(row)
 
@@ -487,12 +528,14 @@ def run_backtest_stream(
     param_combos_limit: int | None = None,
     regime_tunes: dict[str, dict[str, Any]] | None = None,
     prefer_htf_regime: bool | None = None,
+    instrument_types: dict[str, str] | None = None,
 ):
     """
     Stream server-side backtest rows one by one.
     Yields tuples: (row, completed, total).
     """
-    count = 10_000
+    # Match BACKTEST_FULL_HISTORY_BARS on the FE (50 000 — Deriv cap).
+    count = 50_000
     bars_provided = bars or {}
     spreads = instrument_spreads or {}
 
@@ -592,6 +635,7 @@ def run_backtest_stream(
                             if len(htf_bars_norm) >= 2:
                                 htf_index_by_ltf = build_htf_index_for_each_ltf_bar(ohlc_bars, htf_bars_norm)
 
+                    inst_type = (instrument_types or {}).get(inst_id) or _infer_instrument_type(inst_id, symbol)
                     for regime in regimes:
                         row = _run_single(
                             inst_id, symbol, strategy_id, name, tf, regime, ohlc_bars,
@@ -600,6 +644,7 @@ def run_backtest_stream(
                             htf_bars=htf_bars_norm,
                             htf_index_by_ltf=htf_index_by_ltf,
                             prefer_htf_regime=prefer_htf_regime,
+                            instrument_type=inst_type,
                         )
                         completed += 1
                         yield row, completed, total

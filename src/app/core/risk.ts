@@ -73,6 +73,122 @@ export function getInstrumentBucket(type: InstrumentType): string {
 }
 
 /**
+ * Currency-aware buckets for forex pairs: EUR/USD and GBP/USD share USD
+ * exposure, so a flat "forex" bucket under-counts correlated risk. We
+ * decompose each pair into its base/quote symbols so sizing can penalise
+ * already-exposed currencies.
+ */
+const QUOTE_CURRENCY_PATTERNS: Array<[RegExp, [string, string]]> = [
+  [/^([A-Z]{3})\/([A-Z]{3})$/, ['$1', '$2']],
+];
+
+/** Return [base, quote] legs for a forex pair; null for non-forex instruments. */
+export function decomposeCurrencyLegs(
+  symbol: string,
+  type: InstrumentType
+): { base: string; quote: string } | null {
+  if (type !== 'fiat') return null;
+  const s = symbol.toUpperCase();
+  for (const [re, [b, q]] of QUOTE_CURRENCY_PATTERNS) {
+    const m = s.match(re);
+    if (m) {
+      return {
+        base: b === '$1' ? m[1] : b,
+        quote: q === '$2' ? m[2] : q,
+      };
+    }
+  }
+  // Fallback for 6-char symbols without slash (e.g. EURUSD)
+  if (/^[A-Z]{6}$/.test(s)) {
+    return { base: s.slice(0, 3), quote: s.slice(3, 6) };
+  }
+  return null;
+}
+
+/** Exposure to each currency leg implied by currently-open positions. */
+export function computeCurrencyExposure(
+  positions: Position[],
+  instrumentTypes: Record<string, InstrumentType>
+): Record<string, number> {
+  const exposure: Record<string, number> = {};
+  for (const p of positions) {
+    const symbol = p.instrument ?? p.instrumentId;
+    const type = instrumentTypes[p.instrumentId] ?? 'fiat';
+    const legs = decomposeCurrencyLegs(symbol, type);
+    const sign = p.type === 'LONG' ? 1 : -1;
+    const notional = p.size * p.currentPrice;
+    if (!legs) {
+      exposure[symbol.toUpperCase()] = (exposure[symbol.toUpperCase()] ?? 0) + sign * notional;
+      continue;
+    }
+    // LONG EUR/USD = long EUR, short USD. We measure absolute currency risk.
+    exposure[legs.base] = (exposure[legs.base] ?? 0) + sign * notional;
+    exposure[legs.quote] = (exposure[legs.quote] ?? 0) - sign * notional;
+  }
+  return exposure;
+}
+
+/**
+ * Correlation-aware sizing penalty: when the proposed trade would further
+ * increase exposure to a currency that is already carrying a large net
+ * position, reduce the size. Returns a scale in (0, 1].
+ *
+ * The penalty kicks in when the ratio of existing currency-leg exposure to
+ * portfolio equity exceeds ``threshold`` (default 0.5 × equity). Above the
+ * threshold it linearly decays to ``minScale`` at the cap (default 1.5 × equity).
+ */
+export function correlationScale(
+  equity: number,
+  positions: Position[],
+  instrumentTypes: Record<string, InstrumentType>,
+  targetSymbol: string,
+  targetType: InstrumentType,
+  side: PositionSide,
+  options?: { threshold?: number; cap?: number; minScale?: number }
+): number {
+  if (equity <= 0 || positions.length === 0) return 1;
+  const legs = decomposeCurrencyLegs(targetSymbol, targetType);
+  if (!legs) return 1;
+  const exposure = computeCurrencyExposure(positions, instrumentTypes);
+  const sign = side === 'LONG' ? 1 : -1;
+  const baseAbs = Math.abs((exposure[legs.base] ?? 0) + sign * 1) / equity;
+  const quoteAbs = Math.abs((exposure[legs.quote] ?? 0) - sign * 1) / equity;
+  const worst = Math.max(baseAbs, quoteAbs);
+  const threshold = options?.threshold ?? 0.5;
+  const cap = options?.cap ?? 1.5;
+  const minScale = options?.minScale ?? 0.3;
+  if (worst <= threshold) return 1;
+  if (worst >= cap) return minScale;
+  const t = (worst - threshold) / (cap - threshold);
+  return 1 - (1 - minScale) * t;
+}
+
+/**
+ * Volatility-targeting scalar: size so that (size × entry × ATR%) tracks
+ * ``target_daily_vol_pct`` of equity. Returns a multiplier that, applied to
+ * the risk-% derived size, brings the position's expected daily move in line
+ * with the target.
+ *
+ * Keeps the multiplier clamped so extreme ATR% values do not balloon the
+ * position. Zero / invalid ATR returns 1 (no-op).
+ */
+export function volatilityTargetScale(
+  equity: number,
+  atrPct: number | undefined,
+  price: number,
+  sizeRaw: number,
+  targetDailyVolPct: number = 0.01
+): number {
+  if (!Number.isFinite(atrPct) || (atrPct ?? 0) <= 0) return 1;
+  if (price <= 0 || equity <= 0 || sizeRaw <= 0) return 1;
+  const expectedDailyMove = sizeRaw * price * (atrPct as number);
+  const targetMove = equity * targetDailyVolPct;
+  if (expectedDailyMove <= 0) return 1;
+  const ratio = targetMove / expectedDailyMove;
+  return Math.max(0.25, Math.min(2.5, ratio));
+}
+
+/**
  * Check if adding a new position would breach global or bot-level limits.
  * @param maxPositionsPerInstrument - From confidence (1–3). Default 1.
  */
@@ -168,6 +284,12 @@ export function tryOpenPosition(
     sizeMultiplier?: number;
     /** NN risk-reward ratio for take-profit. Overrides botParams.defaultRiskRewardRatio. */
     tpR?: number;
+    /** Target daily portfolio volatility (fraction of equity). Enables vol-targeting. */
+    targetDailyVolPct?: number;
+    /** Symbol (e.g. EUR/USD) for currency-leg decomposition. */
+    instrumentSymbol?: string;
+    /** Map of instrument id -> type for currency exposure aggregation. */
+    instrumentTypes?: Record<string, InstrumentType>;
   }
 ): TryOpenPositionResult {
   const pipValue = options?.pipValuePerUnit ?? 1;
@@ -247,7 +369,39 @@ export function tryOpenPosition(
     if (v >= 0.07) return 0.5;
     return Math.max(0.5, 1 - (v - 0.02) * 10);
   })();
-  size = size * warmup * sizeMult * volScale;
+
+  /**
+   * Portfolio-level volatility targeting. When the caller supplies a target
+   * daily σ and ATR%, we rescale so the expected daily move matches target.
+   * Caps prevent over-aggressive sizing when ATR is tiny.
+   */
+  const volTargetScale = options?.targetDailyVolPct
+    ? volatilityTargetScale(
+        portfolio.equity,
+        options.volatilityPct,
+        entryPrice,
+        size,
+        options.targetDailyVolPct
+      )
+    : 1;
+
+  /**
+   * Correlation-aware penalty: if this trade would pile further exposure onto
+   * a currency leg that the portfolio is already loaded with, reduce the
+   * size. EUR/USD and GBP/USD share USD; this bucket was previously flat.
+   */
+  const corrScale = options?.instrumentSymbol && options?.instrumentTypes
+    ? correlationScale(
+        portfolio.equity,
+        existingPositions,
+        options.instrumentTypes,
+        options.instrumentSymbol,
+        instrumentType,
+        side
+      )
+    : 1;
+
+  size = size * warmup * sizeMult * volScale * volTargetScale * corrScale;
   if (size <= 0 || !Number.isFinite(size)) {
     return { allowed: false, reason: 'Position size invalid or zero after sizing' };
   }

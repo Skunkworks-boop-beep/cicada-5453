@@ -16,6 +16,12 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  server: {
+    watch: {
+      // Ignore backend files to prevent Linux inotify exhaustion.
+      ignored: ['**/python/**', '**/.venv/**', '**/venv/**'],
+    },
+  },
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],

@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { selectScopeForTick, getBotExecutionIntervalMs } from './botExecution';
+import { selectScopeForTick, getBotExecutionIntervalMs, coarsestTimeframeInBot } from './botExecution';
 import { STYLE_TO_SCOPE, getTimeframesForScope, getScopeForTimeframe, getScopeForStyle, getTimeframesForStyle } from './scope';
 import type { BotConfig, TradeScope, TradeStyle } from './types';
 import { DEFAULT_SCOPE_SELECTOR_CONFIG } from './types';
@@ -176,6 +176,16 @@ describe('selectScopeForTick', () => {
   it('undefined scopeMode defaults to auto', () => {
     const scope = selectScopeForTick(makeBot(), makeInput());
     expect(scope).not.toBeNull();
+  });
+});
+
+describe('coarsestTimeframeInBot', () => {
+  it('picks the highest bar duration', () => {
+    expect(coarsestTimeframeInBot(['M5', 'H4', 'W1', 'D1'])).toBe('W1');
+  });
+  it('empty or undefined returns null', () => {
+    expect(coarsestTimeframeInBot([])).toBeNull();
+    expect(coarsestTimeframeInBot(undefined)).toBeNull();
   });
 });
 

@@ -7,11 +7,39 @@
 import { getAllStrategies } from '../src/app/core/registries';
 import { getSignalFn } from '../src/app/core/signals';
 import { spawnSync } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, '..');
+
+/**
+ * Resolve the Python executable that has the project dependencies installed.
+ * Priority:
+ *   1. CICADA_PYTHON env var (explicit override)
+ *   2. python/venv/bin/python (POSIX) or python/venv/Scripts/python.exe (Windows)
+ *   3. 'python3' / 'python' on PATH
+ *
+ * The old implementation called `python` from PATH, which on most dev machines
+ * is either unavailable or points to a system Python without torch installed.
+ * The verify step then emitted a misleading "failed: undefined" and the
+ * remaining tests ran against stale state. Now the script hard-fails when no
+ * viable interpreter can be found.
+ */
+function resolvePython(): string {
+  const env = process.env.CICADA_PYTHON?.trim();
+  if (env && fs.existsSync(env)) return env;
+  const posixVenv = path.join(rootDir, 'python/venv/bin/python');
+  const windowsVenv = path.join(rootDir, 'python/venv/Scripts/python.exe');
+  if (fs.existsSync(posixVenv)) return posixVenv;
+  if (fs.existsSync(windowsVenv)) return windowsVenv;
+  const probe = spawnSync('python3', ['--version']);
+  if (probe.status === 0) return 'python3';
+  return 'python';
+}
+
+const PYTHON = resolvePython();
 
 const strategies = getAllStrategies();
 const ids = strategies.map((s) => s.id);
@@ -34,12 +62,15 @@ for (const id of ids) {
 if (feOk) console.log('OK frontend: all strategies have signal functions');
 
 // 2. Python: run verify script that checks each strategy
-const pyResult = spawnSync('python', [path.join(rootDir, 'python/verify_signals.py')], {
+const pyResult = spawnSync(PYTHON, [path.join(rootDir, 'python/verify_signals.py')], {
   cwd: rootDir,
   encoding: 'utf-8',
 });
 if (pyResult.status !== 0) {
-  console.error('Python verify_signals.py failed:', pyResult.stderr || pyResult.stdout);
+  console.error(
+    `Python verify_signals.py failed using interpreter "${PYTHON}":`,
+    pyResult.stderr || pyResult.stdout || `(no stderr/stdout; exit=${pyResult.status}, error=${pyResult.error?.message ?? 'n/a'})`
+  );
   process.exit(1);
 }
 
@@ -65,7 +96,7 @@ if errors:
     sys.exit(1)
 print(f"OK Python: all {len(ids)} strategies mapped and return valid signals")
 `;
-const pyCheck = spawnSync('python', ['-c', pyScript], {
+const pyCheck = spawnSync(PYTHON, ['-c', pyScript], {
   cwd: rootDir,
   encoding: 'utf-8',
 });

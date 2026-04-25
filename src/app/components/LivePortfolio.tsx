@@ -324,7 +324,8 @@ export function LivePortfolio() {
             ⚠ Broker disconnected — closed trades below may be stale. Connect broker for live P/L.
           </div>
         )}
-        <div className="space-y-1 mt-2">
+        <div className="mt-2 max-h-64 overflow-y-auto overflow-x-hidden scrollbar-visible pr-3">
+        <div className="space-y-1 min-w-0">
           {closedTradesList.length === 0 ? (
             <div className="py-4 text-center text-[10px] text-[#ff6600]/80 border-b border-[#00ff00]/30">
               No closed trades yet.
@@ -367,9 +368,15 @@ export function LivePortfolio() {
             })
           )}
         </div>
+        </div>
         {state.backwardValidation?.status === 'completed' && (
-          <div className="mt-2 py-2 px-2 border border-[#00ff00]/50 bg-[#00ff0008] text-[#00ff00] text-[10px]">
-            Backward validation: {state.backwardValidation.summary.verified} trades verified, {Object.keys(state.backwardValidation.calibrationHints).length} calibration hints. Use [RESEARCH] to apply.
+          <div className="mt-2 py-2 px-2 border border-[#00ff00]/50 bg-[#00ff0008] text-[#00ff00] text-[10px] space-y-1">
+            <p>
+              Backward validation: {state.backwardValidation.summary.verified} verified, {state.backwardValidation.summary.skipped} skipped, {Object.keys(state.backwardValidation.calibrationHints).length} calibration hints. Use [RESEARCH] to apply.
+            </p>
+            <p className="text-[#00ff00]/70 leading-snug">
+              Skipped means the trade was not used for hints: e.g. no bar history (need ≥50 bars for that symbol and scope timeframe), no matching entry bar, missing LONG/SHORT, or the simulated &quot;should have been&quot; direction was not positive on the historical bars.
+            </p>
           </div>
         )}
         {state.backwardValidation?.status === 'failed' && state.backwardValidation.error && (
@@ -378,7 +385,7 @@ export function LivePortfolio() {
           </div>
         )}
         {(state.backwardValidation?.status === 'running' || state.backwardValidation?.status === 'completed') && (state.backwardValidation?.log?.length ?? 0) > 0 && (
-          <div className="mt-2 border border-[#00ff00]/40 bg-black p-2 max-h-20 overflow-auto font-mono text-[10px] space-y-0.5">
+          <div className="mt-2 border border-[#00ff00]/40 bg-black p-2 max-h-20 overflow-auto scrollbar-hide font-mono text-[10px] space-y-0.5">
             {state.backwardValidation!.log.map((entry, i) => (
               <div key={i} className={`truncate ${logLevelToTextClass(entry.level)}`}>&gt; {entry.message}</div>
             ))}

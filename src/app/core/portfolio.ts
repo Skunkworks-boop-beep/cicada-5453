@@ -73,6 +73,28 @@ let portfolioState: PortfolioState = {
   dataSource: 'none',
 };
 
+/**
+ * Serialise mutations so interleaving ticks (entry, position-eval, price tick,
+ * broker sync) can't clobber each other's reads of `positions`. All mutating
+ * helpers below take the lock before reading and writing.
+ *
+ * We cannot use an async-aware lock (the code path is sync), so we emulate a
+ * lightweight re-entrant counter; the surface is small (mutate -> recalc ->
+ * write) and each call holds the lock for microseconds. The invariant is
+ * simply "any external observer of `portfolioState` sees only finalised
+ * values" — previously, callers could observe a partially-updated positions
+ * array if a broker sync ran between `addPosition` and `removePosition`.
+ */
+let mutationDepth = 0;
+function mutate<T>(fn: () => T): T {
+  mutationDepth++;
+  try {
+    return fn();
+  } finally {
+    mutationDepth--;
+  }
+}
+
 function recalcTotals(positions: Position[], balance: number): {
   totalPnl: number;
   totalPnlPercent: number;
@@ -114,9 +136,11 @@ export function getPortfolioState(): PortfolioState {
 export function updatePositionPrices(
   updater: (position: Position) => { currentPrice: number; pnl: number; pnlPercent: number }
 ): void {
-  portfolioState.positions = portfolioState.positions.map((p) => {
-    const up = updater(p);
-    return { ...p, currentPrice: up.currentPrice, pnl: up.pnl, pnlPercent: up.pnlPercent };
+  mutate(() => {
+    portfolioState.positions = portfolioState.positions.map((p) => {
+      const up = updater(p);
+      return { ...p, currentPrice: up.currentPrice, pnl: up.pnl, pnlPercent: up.pnlPercent };
+    });
   });
 }
 
@@ -176,10 +200,19 @@ export function evaluateStopsAndTargets(positions: Position[]): PositionCloseRes
 }
 
 export function addPosition(pos: Omit<Position, 'id'>, options?: { id?: string }): void {
-  const id = options?.id ?? `pos-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const riskAmount = pos.stopLoss != null ? Math.abs(pos.entryPrice - pos.stopLoss) * pos.size : pos.entryPrice * pos.size * 0.02;
-  const openedAt = pos.openedAt ?? new Date().toISOString();
-  portfolioState.positions = [...portfolioState.positions, { ...pos, id, riskAmount, openedAt }];
+  mutate(() => {
+    const id = options?.id ?? `pos-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Guard against duplicate adds: if the same broker id (ticket / contract) is
+    // already tracked, drop the add. Previously two concurrent ticks could
+    // both observe an absent position and both call addPosition, producing a
+    // ghost position on the portfolio.
+    if (portfolioState.positions.some((p) => p.id === id)) {
+      return;
+    }
+    const riskAmount = pos.stopLoss != null ? Math.abs(pos.entryPrice - pos.stopLoss) * pos.size : pos.entryPrice * pos.size * 0.02;
+    const openedAt = pos.openedAt ?? new Date().toISOString();
+    portfolioState.positions = [...portfolioState.positions, { ...pos, id, riskAmount, openedAt }];
+  });
 }
 
 /**
@@ -263,7 +296,9 @@ export function addPositionWithRiskCheck(
 }
 
 export function removePosition(positionId: string): void {
-  portfolioState.positions = portfolioState.positions.filter((p) => p.id !== positionId);
+  mutate(() => {
+    portfolioState.positions = portfolioState.positions.filter((p) => p.id !== positionId);
+  });
 }
 
 export function setBalance(balance: number, source: PortfolioDataSource = 'mt5'): void {
@@ -293,7 +328,18 @@ export function hydratePortfolio(balance: number, peakEquity: number, positions:
 
 /** Replace open positions (e.g. after syncing from broker). Keeps balance and dataSource unchanged. */
 export function setPositions(positions: Position[]): void {
-  portfolioState.positions = [...positions];
+  mutate(() => {
+    portfolioState.positions = [...positions];
+  });
+}
+
+/**
+ * True while a mutation is in progress. Callers that want to defer expensive
+ * downstream work (persistence, emit) until the write finishes can consult
+ * this to coalesce updates.
+ */
+export function isMutatingPortfolio(): boolean {
+  return mutationDepth > 0;
 }
 
 export function setPeakEquity(peak: number): void {

@@ -23,28 +23,63 @@ const PROFIT_FACTOR_ALL_WINS = 10;
 /**
  * Aggregate backtest metrics for a bot (instrument + strategies): average win rate and profit factor
  * from completed rows that match the bot's instrument AND strategy set for like-for-like comparison.
- * Without strategy filter, drift would compare a bot using one strategy to backtests of all strategies.
+ *
+ * The aggregation is **trade-weighted** so a strategy with 100 trades at a 60%
+ * win rate dominates a strategy with 2 trades at 100% — matching how the bot
+ * actually experiences its performance in live trading. This was previously an
+ * arithmetic mean of row-level win rates, which oversampled tiny-sample rows.
  */
 export function getBacktestMetricsForBot(
   bot: BotConfig,
   results: BacktestResultRow[]
 ): { winRate: number; profitFactor: number; sampleSize: number } {
   const botStrategyIds = new Set(Array.isArray(bot.strategyIds) ? bot.strategyIds : []);
+  const botTimeframes = new Set(Array.isArray(bot.timeframes) ? bot.timeframes : []);
   const completed = results.filter((r) => {
     if (r.status !== 'completed' || r.instrumentId !== bot.instrumentId) return false;
     if (botStrategyIds.size > 0 && !botStrategyIds.has(r.strategyId)) return false;
-    return true;
+    // Only compare against timeframes the bot actually trades; otherwise an
+    // M5 scalp bot is being judged against an H4 swing backtest of the same
+    // strategy.
+    if (botTimeframes.size > 0 && !botTimeframes.has(r.timeframe)) return false;
+    // Drop zero-trade rows: they contribute no information and otherwise
+    // skew PF averages downward.
+    return (r.trades ?? 0) > 0;
   });
   if (completed.length === 0) {
     return { winRate: 0.5, profitFactor: 1, sampleSize: 0 };
   }
-  const winRate =
-    completed.reduce((s, r) => s + r.winRate, 0) / completed.length;
-  const profitFactor =
-    completed.reduce((s, r) => s + (r.profitFactor ?? 1), 0) / completed.length;
+  // Trade-weighted averages.
+  const totalTrades = completed.reduce((s, r) => s + (r.trades ?? 0), 0);
+  if (totalTrades <= 0) {
+    return { winRate: 0.5, profitFactor: 1, sampleSize: completed.length };
+  }
+  const winRateWeighted =
+    completed.reduce((s, r) => s + (r.winRate * (r.trades ?? 0)), 0) / totalTrades;
+  // Profit factor is ratio-like; averaging PFs directly makes no sense.
+  // Aggregate gross profit and gross loss by proxy: row-level profit * trades * win%.
+  // This reconstructs aggregated PF instead of averaging the field directly.
+  let grossProfit = 0;
+  let grossLoss = 0;
+  for (const r of completed) {
+    const trades = r.trades ?? 0;
+    if (trades <= 0) continue;
+    const winFrac = (r.winRate ?? 0) / 100;
+    const pf = r.profitFactor ?? 1;
+    // Decompose into gross profit / loss from win rate and PF — a rough
+    // reconstruction, but much better than averaging PF directly.
+    const wins = winFrac * trades;
+    const losses = trades - wins;
+    const avgLoss = losses > 0 ? 1 : 0;
+    const avgWin = wins > 0 && pf > 0 ? pf * avgLoss : 0;
+    grossProfit += wins * avgWin;
+    grossLoss += losses * avgLoss;
+  }
+  const aggregatedPf =
+    grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 10 : 1;
   return {
-    winRate: winRate / 100,
-    profitFactor,
+    winRate: winRateWeighted / 100,
+    profitFactor: aggregatedPf,
     sampleSize: completed.length,
   };
 }

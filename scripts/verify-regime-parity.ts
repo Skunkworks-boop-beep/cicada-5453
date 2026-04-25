@@ -11,6 +11,18 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const rootDir = join(__dirname, '..');
+
+function resolvePython(): string {
+  const env = process.env.CICADA_PYTHON?.trim();
+  if (env && existsSync(env)) return env;
+  const posix = join(rootDir, 'python/venv/bin/python');
+  const win = join(rootDir, 'python/venv/Scripts/python.exe');
+  if (existsSync(posix)) return posix;
+  if (existsSync(win)) return win;
+  return 'python3';
+}
+const PYTHON = resolvePython();
 import { detectRegimeSeries } from '../src/app/core/regimes';
 import type { OHLCVBar } from '../src/app/core/ohlcv';
 
@@ -51,7 +63,7 @@ function runPythonRegime(bars: OHLCVBar[]): Promise<string[]> {
     const barsForPython = bars.map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }));
     writeFileSync(tmpPath, JSON.stringify(barsForPython));
 
-    const proc = spawn('python', [scriptPath, tmpPath, String(LOOKBACK)], {
+    const proc = spawn(PYTHON, [scriptPath, tmpPath, String(LOOKBACK)], {
       cwd: join(process.cwd()),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
