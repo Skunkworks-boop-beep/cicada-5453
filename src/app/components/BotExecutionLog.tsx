@@ -159,15 +159,16 @@ export function BotExecutionLog() {
     };
   }, [deployedCount]);
 
+  /** Tick even when execution is paused so OHLCV/regime/predict still run (observe-only; no orders). */
   useEffect(() => {
-    if (!execution.enabled || daemonOwns) return;
+    if (daemonOwns) return;
     const deployed = bots.filter((b) => b.status === 'deployed');
     if (deployed.length === 0) return;
     const intervalMs = getBotExecutionIntervalMs(deployed);
     void actions.tickBotExecution();
     const interval = setInterval(() => actions.tickBotExecution(), intervalMs);
     return () => clearInterval(interval);
-  }, [actions, execution.enabled, deployedCount, daemonOwns]);
+  }, [actions, deployedCount, daemonOwns]);
 
   /** Position-only evaluation: run every 8s when we have open positions. */
   const hasPositions = portfolio.positions.length > 0;
@@ -223,8 +224,8 @@ export function BotExecutionLog() {
       <div className="flex items-center gap-2 text-[#00ff00] text-xs mb-1">
         <span>[ BOT EXECUTION LOG ]</span>
         <div className="flex-1 border-b border-[#00ff00]"></div>
-        <span className="text-[10px] text-[#ff6600]">
-          {execution.enabled ? '● LIVE' : '○ PAUSED'} · {deployedCount} deployed
+        <span className="text-[10px] text-[#ff6600]" title={execution.enabled ? 'Live orders' : 'Observe-only: analysis runs; no broker orders'}>
+          {execution.enabled ? '● LIVE' : '○ PAUSED · observe'} · {deployedCount} deployed
         </span>
         {hasRemote && (
           <span className="text-[9px] text-[#00ff00]/60">●</span>
@@ -266,7 +267,11 @@ export function BotExecutionLog() {
           </div>
         ) : logForView.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-[#00ff00]/50 text-[10px] py-8 gap-2">
-            <span>{execution.enabled ? 'Waiting for next tick… (every 15–120s by scope)' : 'Paused — enable BOT EXECUTION to resume'}</span>
+            <span>
+              {execution.enabled
+                ? 'Waiting for next tick… (every 15–120s by scope)'
+                : 'Observation ticks running — signals log here; enable BOT EXECUTION to place orders.'}
+            </span>
             {hasRemote && (
               <button
                   type="button"

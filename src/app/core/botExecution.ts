@@ -482,7 +482,8 @@ const emitEvent = (
 export async function runBotExecution(params: BotExecutionParams): Promise<void> {
   const { bots, instruments, brokers, executionEnabled, onEmit, onEvent } = params;
   const closedTradesByBot = params.closedTradesByBot ?? {};
-  if (!executionEnabled) return;
+  /** When false, still run fetch/regime/predict and risk (observe / learn) but do not open or close positions. */
+  const ordersEnabled = executionEnabled;
 
   const deployedBots = bots.filter((b) => b.status === 'deployed' && b.nnFeatureVector && b.nnFeatureVector.length >= 32 && b.nnFeatureVector.length <= 512);
   if (deployedBots.length === 0) return;
@@ -809,6 +810,18 @@ export async function runBotExecution(params: BotExecutionParams): Promise<void>
         action === 2 || (action === 0 && p.type === 'SHORT') || (action === 1 && p.type === 'LONG');
       for (const pos of existingForPipeline) {
         if (!shouldCloseOnPrediction(pos) || currentPrice <= 0) continue;
+        if (!ordersEnabled) {
+          emitEvent(onEvent, bot.id, symbol, 'close', 'skip', 'Execution paused — not closing (enable BOT EXECUTION to act on close signal)', {
+            positionId: pos.id,
+            reason: 'execution_paused_no_close',
+            action,
+            scope: pipeline.scope,
+            style: pipeline.style,
+            timeframe: pipeline.timeframe,
+            pipelineId,
+          }, cycleId);
+          continue;
+        }
         if (inst.brokerId === 'broker-deriv') {
           emitEvent(onEvent, bot.id, symbol, 'close', 'skip', 'Deriv fixed-duration contract: waiting for expiry', {
             positionId: pos.id,
@@ -1084,6 +1097,20 @@ export async function runBotExecution(params: BotExecutionParams): Promise<void>
           scope: pipeline.scope,
           timeframe: pipeline.timeframe,
           reason: 'invalid_size',
+        }, cycleId);
+        continue;
+      }
+
+      if (!ordersEnabled) {
+        emitEvent(onEvent, bot.id, symbol, 'order', 'skip', `Observe only — ${side} passed risk; execution paused (no order)`, {
+          side,
+          size,
+          scope: pipeline.scope,
+          style: pipeline.style,
+          timeframe: pipeline.timeframe,
+          entryPrice: currentPrice,
+          reason: 'execution_paused_observe',
+          pipelineId: `${cycleId}:${bot.id}:${pipeline.id}`,
         }, cycleId);
         continue;
       }
