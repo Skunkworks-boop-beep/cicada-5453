@@ -78,7 +78,26 @@ import { runBotExecution, runPositionEvaluation, POSITION_EVAL_INTERVAL_MS, type
 import type { PortfolioState } from '../core/types';
 import { buildScheduleFromInstrumentsAndBots, getNextDueRebuilds } from '../core/scheduler';
 import { loadStateFromBackend, saveState, mergeStrategiesWithPersisted, saveResearchBars, clearResearchBars, type PersistedState } from '../core/persistence';
-import { postBuild, getHealth, postMt5Connect, getMt5Account, getMt5Prices, getMt5Positions, getMt5SymbolSpreads, postBacktestStream, postResearchGridStream, postBackwardValidate, postExecutionLogAppend, getExecutionLog, getBots, postBots } from '../core/api';
+import {
+  postBuild,
+  getHealth,
+  postMt5Connect,
+  getMt5Account,
+  getMt5Prices,
+  getMt5Positions,
+  getMt5SymbolSpreads,
+  postBacktestStream,
+  postResearchGridStream,
+  postBackwardValidate,
+  postExecutionLogAppend,
+  getExecutionLog,
+  getBots,
+  postBots,
+  getJobs,
+  getJobRecord,
+  postJobCancel,
+  type JobRecord,
+} from '../core/api';
 import { getPositions, postPositions } from '../core/positionsApi';
 import { connect as derivConnect, disconnect as derivDisconnect, isConnected as derivIsConnected, getBalance as derivGetBalance, getDerivAccountSnapshot, getDerivPortfolioPrices, getDerivProfitTable, getDerivSymbolQuote, getDerivSymbolSpreads, getDerivSymbolSpreadFromTick, getDerivPositions, ourSymbolToDerivKeys, resolveDerivApiSymbolToRegistry, setOnDerivConnectionLost } from '../core/derivApi';
 import { getExnessAccount, getExnessPositions } from '../core/exnessApi';
@@ -153,6 +172,10 @@ export interface ResearchState {
   skippedInstruments?: Array<{ instrumentId: string; instrumentSymbol?: string; reason: string; barCount?: number; minRequired?: number; detail?: string }>;
   /** Fetched bars (instrumentId|tf -> bars). Kept until Clear; persisted to survive reload. */
   barsByKey?: Record<string, Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>>;
+  /** Backend job id from stream `job` line or reattach; enables /jobs/cancel after refresh. */
+  remoteJobId?: string;
+  /** Deduplicate server `message` when polling after reattach. */
+  lastServerMessage?: string;
 }
 
 export interface TradingStoreState {
@@ -182,6 +205,10 @@ export interface TradingStoreState {
   botExecutionLog: BotExecutionEvent[];
   /** Step-by-step bot NN build log (timing, fetches, POST /build). */
   botBuildLog: BotBuildLogEntry[];
+  /** Append-only order rows hydrated from /orders. Read-only on the FE. */
+  orders: import('../core/orderRecords').OrderRow[];
+  /** Append-only SL/TP-event rows hydrated from /sl_tp_events. Read-only on the FE. */
+  slTpEvents: import('../core/orderRecords').SLTPEventRow[];
 }
 
 type Listener = () => void;
@@ -248,6 +275,125 @@ let research: ResearchState = {
 };
 let researchAbortController: AbortController | null = null;
 let researchAbortReason: 'broker_disconnected' | null = null;
+let researchServerSyncTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * After refresh, client state is idle but the Python job may still run. Poll /jobs and
+ * restore a running research panel + append job ``message`` lines (lossy vs full NDJSON log).
+ */
+async function syncResearchWithBackendJobs() {
+  if (researchAbortController) return;
+
+  let activeList: JobRecord[] = [];
+  try {
+    activeList = await getJobs({ kind: 'research', activeOnly: true, signal: AbortSignal.timeout(15_000) });
+  } catch {
+    return;
+  }
+
+  const active = activeList.find((j) => j.kind === 'research' && (j.status === 'running' || j.status === 'queued'));
+
+  if (active) {
+    const msg = (active.message || '').trim();
+    const last = research.lastServerMessage ?? '';
+
+    if (research.status === 'running' && research.remoteJobId === active.job_id) {
+      let changed = false;
+      if (research.progress !== active.progress) {
+        research = { ...research, progress: active.progress };
+        changed = true;
+      }
+      if (msg && msg !== last) {
+        research = {
+          ...research,
+          log: [...research.log, { level: 'progress' as ResearchLogLevel, message: msg }].slice(-400),
+          lastServerMessage: msg,
+        };
+        changed = true;
+      }
+      if (changed) emit();
+      return;
+    }
+
+    const seedLog: ResearchLogEntry[] = [
+      {
+        level: 'info' as const,
+        message:
+          'Reconnected to a research job on the server (e.g. after refresh). The live NDJSON stream is gone; messages below follow the server job status (not the full stream).',
+      },
+    ];
+    if (msg) seedLog.push({ level: 'progress' as const, message: msg });
+    research = {
+      status: 'running',
+      regimeTunes: [],
+      paramTunes: [],
+      baselineResults: [],
+      log: seedLog,
+      error: undefined,
+      progress: active.progress,
+      total: undefined,
+      completed: undefined,
+      currentPhase: undefined,
+      currentInstrument: undefined,
+      currentStrategy: undefined,
+      currentRegime: undefined,
+      paramJobDone: undefined,
+      paramJobTotal: undefined,
+      regimeConfigProgress: undefined,
+      regimeConfigTotal: undefined,
+      instrumentIdx: undefined,
+      instrumentTotal: undefined,
+      skippedInstruments: undefined,
+      barsByKey: undefined,
+      remoteJobId: active.job_id,
+      lastServerMessage: msg,
+    };
+    emit();
+    return;
+  }
+
+  if (research.status === 'running' && research.remoteJobId) {
+    const job = await getJobRecord(research.remoteJobId, { signal: AbortSignal.timeout(15_000) });
+    if (!job) return;
+    if (job.status !== 'succeeded' && job.status !== 'failed' && job.status !== 'cancelled') return;
+
+    const tail =
+      job.status === 'succeeded'
+        ? 'Research job finished on the server. This tab did not receive result payloads (stream was not connected). Run research again here, or use the session that held the stream.'
+        : job.status === 'cancelled'
+          ? 'Research job was cancelled on the server.'
+          : `Research job failed: ${job.error || job.message || 'unknown error'}`;
+
+    research = {
+      ...research,
+      status: job.status === 'succeeded' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : 'failed',
+      regimeTunes: [],
+      paramTunes: [],
+      baselineResults: [],
+      error: job.status === 'failed' ? (job.error || 'Research failed') : undefined,
+      progress: job.status === 'succeeded' ? 100 : research.progress,
+      remoteJobId: undefined,
+      lastServerMessage: undefined,
+      log: [
+        ...research.log,
+        {
+          level: (job.status === 'succeeded' || job.status === 'cancelled' ? 'warning' : 'error') as ResearchLogLevel,
+          message: tail,
+        },
+      ].slice(-400),
+    };
+    emit();
+  }
+}
+
+function startResearchServerSync() {
+  if (typeof window === 'undefined' || researchServerSyncTimer != null) return;
+  const tick = () => {
+    void syncResearchWithBackendJobs();
+  };
+  researchServerSyncTimer = setInterval(tick, 2000);
+  queueMicrotask(tick);
+}
 let bots: BotConfig[] = [];
 let execution = { ...DEFAULT_EXECUTION_STATE };
 let closedTradesByBot: Record<string, ClosedTrade[]> = {};
@@ -261,6 +407,10 @@ let backwardValidation: {
 } | null = null;
 const BOT_EXECUTION_LOG_MAX = 500;
 let botExecutionLog: BotExecutionEvent[] = [];
+// Append-only projection of the backend's order_records.sqlite. Hydrated via
+// fetchOrders / fetchSLTPEvents; never mutated locally.
+let orders: import('../core/orderRecords').OrderRow[] = [];
+let slTpEvents: import('../core/orderRecords').SLTPEventRow[] = [];
 
 const MAX_BOT_BUILD_LOG = 600;
 const MAX_PERSISTED_BOT_BUILD_LOG = 350;
@@ -311,6 +461,8 @@ function getSnapshot(): TradingStoreState {
     backwardValidation,
     botExecutionLog: [...botExecutionLog],
     botBuildLog: [...botBuildLog],
+    orders: [...orders],
+    slTpEvents: [...slTpEvents],
   };
   cachedSnapshotVersion = snapshotVersion;
   return cachedSnapshot;
@@ -800,6 +952,8 @@ function persistBacktestProgressIfDue() {
 }
 
 let backtestAbortController: AbortController | null = null;
+/** First NDJSON `job` line from POST /backtest/stream — used to POST /jobs/{id}/cancel. */
+let backtestServerJobId: string | null = null;
 let buildAbortController: AbortController | null = null;
 let buildingBotId: string | null = null;
 /** Set when abort is due to broker disconnect (so catch preserves cancelled state with "Broker disconnected" instead of resetting).
@@ -857,6 +1011,8 @@ export interface TradingStoreActions {
   clearBotExecutionLog: () => void;
   /** Clear bot NN build trace terminal. */
   clearBotBuildLog: () => void;
+  /** Hydrate orders + sl_tp_events from /orders and /sl_tp_events. Read-only. */
+  refreshOrderRecords: () => Promise<void>;
   loadExecutionLogFromBackend: (options?: { merge?: boolean }) => Promise<void>;
   loadPersisted: () => void;
   addBroker: (broker: BrokerConfig) => void;
@@ -981,7 +1137,19 @@ function getActions(): TradingStoreActions {
       researchAbortReason = null;
       const researchAbort = new AbortController();
       researchAbortController = researchAbort;
-      research = { status: 'running', regimeTunes: [], paramTunes: [], baselineResults: [], log: [] as ResearchLogEntry[], error: undefined, progress: 0, total: undefined, completed: undefined };
+      research = {
+        status: 'running',
+        regimeTunes: [],
+        paramTunes: [],
+        baselineResults: [],
+        log: [] as ResearchLogEntry[],
+        error: undefined,
+        progress: 0,
+        total: undefined,
+        completed: undefined,
+        remoteJobId: undefined,
+        lastServerMessage: undefined,
+      };
       emit();
       const instrument_symbols: Record<string, string> = {};
       for (const id of request.instrumentIds) {
@@ -990,8 +1158,8 @@ function getActions(): TradingStoreActions {
       }
       const strategy_names: Record<string, string> = {};
       for (const id of request.strategyIds) {
-        const s = strategies.find((x) => x.id === id);
-        if (s) strategy_names[id] = s.name ?? id;
+        const s = strategies.find((x) => x.id === id) ?? getAllStrategies().find((x) => x.id === id);
+        strategy_names[id] = s?.name ?? id;
       }
       const apiAvailable = await getHealth({ timeoutMs: getRemoteServerUrl() ? 15_000 : 5_000 });
       if (!apiAvailable) {
@@ -1092,6 +1260,12 @@ function getActions(): TradingStoreActions {
           flushStreamUi(false);
         };
 
+        const strategyRunList = request.strategyIds.map((id) => strategy_names[id] ?? id).join(', ');
+        pushResearchLog({
+          level: 'info',
+          message: `Strategy set for this run (${request.strategyIds.length} from Strategy Library): ${strategyRunList}`,
+        });
+
         for (const instrumentId of request.instrumentIds) {
           const sym = instrument_symbols[instrumentId] ?? instrumentId;
           for (const tf of timeframes) {
@@ -1144,11 +1318,18 @@ function getActions(): TradingStoreActions {
           calibration_hints: backwardValidation?.status === 'completed' ? backwardValidation.calibrationHints : undefined,
         }, (chunk) => {
           const c = chunk as {
+            type?: string;
+            job_id?: string;
             message?: string; level?: string; progress?: number; total?: number; completed?: number;
             currentPhase?: string; currentInstrument?: string; currentStrategy?: string; currentRegime?: string;
             paramJobDone?: number; paramJobTotal?: number; regimeConfigProgress?: number; regimeConfigTotal?: number;
             instrumentIdx?: number; instrumentTotal?: number;
           };
+          if (c.type === 'job' && c.job_id) {
+            streamPendingState = { ...streamPendingState, remoteJobId: c.job_id };
+            flushStreamUi(true);
+            return;
+          }
           if (c.message) {
             const level = (c.level as ResearchLogLevel) || 'info';
             streamLogBuffer.push({ level, message: c.message });
@@ -1185,6 +1366,8 @@ function getActions(): TradingStoreActions {
             baselineResults: [],
             error: res.error,
             log: [...research.log, { level: 'error', message: `Error: ${res.error}` }].slice(-MAX_RESEARCH_LOG_LINES),
+            remoteJobId: undefined,
+            lastServerMessage: undefined,
           };
         } else {
           const skipped = 'skippedInstruments' in res ? (res.skippedInstruments ?? []) : [];
@@ -1202,6 +1385,8 @@ function getActions(): TradingStoreActions {
             progress: 100,
             total: research.total,
             completed: research.completed,
+            remoteJobId: undefined,
+            lastServerMessage: undefined,
           };
         }
         persistNow();
@@ -1230,17 +1415,59 @@ function getActions(): TradingStoreActions {
           error: isBrokerDisconnect ? 'Broker disconnected. Reconnect and try again.' : (isAbort ? undefined : (e instanceof Error ? e.message : 'Research failed')),
           log: [...research.log, { level: isBrokerDisconnect ? 'error' : (isAbort ? 'warning' : 'error'), message: logMsg }],
           baselineResults: [],
+          remoteJobId: undefined,
+          lastServerMessage: undefined,
         };
         emit();
       }
     },
     cancelResearch() {
-      if (researchAbortController) {
-        researchAbortReason = null;
-        researchAbortController.abort();
-        researchAbortController = null;
-        emit();
-      }
+      // Always notify the server: aborting the NDJSON fetch alone does not set JOB_MANAGER
+      // cancel. remoteJobId may be unset until the first stream chunk, so look up the active
+      // research job when needed so Process Monitor and /jobs stay in sync.
+      void (async () => {
+        let jobId = research.remoteJobId;
+        if (!jobId) {
+          try {
+            const list = await getJobs({ kind: 'research', activeOnly: true, signal: AbortSignal.timeout(12_000) });
+            const active = list.find((j) => j.kind === 'research' && (j.status === 'running' || j.status === 'queued'));
+            if (active) jobId = active.job_id;
+          } catch {
+            /* no-op */
+          }
+        }
+        if (researchAbortController) {
+          researchAbortReason = null;
+          if (jobId) {
+            const ok = await postJobCancel(jobId);
+            if (typeof console !== 'undefined' && !ok) {
+              console.warn('[cancelResearch] Server cancel may have failed; job id:', jobId);
+            }
+          } else {
+            if (typeof console !== 'undefined' && console.warn) {
+              console.warn('[cancelResearch] No active research job id; server may still be running until the stream errors.');
+            }
+          }
+          const ac = researchAbortController;
+          researchAbortController = null;
+          ac?.abort();
+          emit();
+          return;
+        }
+        if (jobId) {
+          await postJobCancel(jobId);
+        }
+        if (research.status === 'running') {
+          research = {
+            ...research,
+            status: 'cancelled',
+            log: [...research.log, { level: 'warning', message: 'Research cancelled.' }],
+            remoteJobId: undefined,
+            lastServerMessage: undefined,
+          };
+          emit();
+        }
+      })();
     },
     clearResearch() {
       clearResearchBars();
@@ -1265,6 +1492,8 @@ function getActions(): TradingStoreActions {
         instrumentTotal: undefined,
         barsByKey: undefined,
         skippedInstruments: undefined,
+        remoteJobId: undefined,
+        lastServerMessage: undefined,
       };
       schedulePersist();
       emit();
@@ -1391,6 +1620,7 @@ function getActions(): TradingStoreActions {
       backtestAbortController?.abort();
       backtestAbortController = new AbortController();
       backtestAbortReason = null;
+      backtestServerJobId = null;
 
       // Show running state immediately so user sees feedback (dots, progress) right away
       setBacktestRunning(request, 'Starting backtest...');
@@ -1404,8 +1634,8 @@ function getActions(): TradingStoreActions {
       }
       const strategy_names: Record<string, string> = {};
       for (const id of request.strategyIds) {
-        const s = strategies.find((x) => x.id === id);
-        if (s) strategy_names[id] = s.name ?? id;
+        const s = strategies.find((x) => x.id === id) ?? getAllStrategies().find((x) => x.id === id);
+        strategy_names[id] = s?.name ?? id;
       }
 
       const remoteConfigured = getRemoteServerUrl() != null;
@@ -1559,7 +1789,9 @@ function getActions(): TradingStoreActions {
           setBacktestPhase('Processing on server...');
           emit();
           const streamedRows: BacktestResultRow[] = [];
-          const serverRes = await postBacktestStream({
+          let serverRes: Awaited<ReturnType<typeof postBacktestStream>>;
+          try {
+            serverRes = await postBacktestStream({
             instrumentIds: request.instrumentIds,
             strategyIds: request.strategyIds,
             timeframes: request.timeframes ?? [],
@@ -1583,6 +1815,11 @@ function getActions(): TradingStoreActions {
             preferHtfRegime: request.preferHtfRegime,
             instrumentTypes: Object.fromEntries(instruments.map((i) => [i.id, i.type])),
           }, (chunk) => {
+            const cj = chunk as { type?: string; job_id?: string };
+            if (cj.type === 'job' && cj.job_id) {
+              backtestServerJobId = cj.job_id;
+              return;
+            }
             if (chunk.type === 'progress') {
               const phase = chunk.phase ?? `Processing on server... (${chunk.completed ?? 0}/${chunk.total ?? 0})`;
               setBacktestPhase(phase);
@@ -1608,6 +1845,9 @@ function getActions(): TradingStoreActions {
               emit();
             }
           }, backtestAbortController!.signal);
+          } finally {
+            backtestServerJobId = null;
+          }
           if ('error' in serverRes) {
             setBacktestFailed(`Backend error: ${serverRes.error}`);
             emit();
@@ -1766,8 +2006,8 @@ function getActions(): TradingStoreActions {
       }
       const strategy_names: Record<string, string> = {};
       for (const id of request.strategyIds) {
-        const s = strategies.find((x) => x.id === id);
-        if (s) strategy_names[id] = s.name ?? id;
+        const s = strategies.find((x) => x.id === id) ?? getAllStrategies().find((x) => x.id === id);
+        strategy_names[id] = s?.name ?? id;
       }
       const getBars = async (instrumentId: string, instrumentSymbol: string, timeframe: string) => {
         const inst = instruments.find((i) => i.id === instrumentId);
@@ -1936,13 +2176,34 @@ function getActions(): TradingStoreActions {
       return winner === 'default' ? resultsDefault : resultsResearch;
     },
     cancelBacktest() {
-      backtestAbortController?.abort();
-      const st = getBacktestState();
-      if (st.status === 'running' && (st.results.length > 0 || st.runRequest)) {
-        setBacktestCancelled(st.results, st.runRequest);
-        persistNow();
-        emit();
-      }
+      // Aborting the stream alone does not set JOB_MANAGER cancel; Process Monitor
+      // stays "running" until POST /jobs/{id}/cancel (same as research).
+      void (async () => {
+        let jobId = backtestServerJobId;
+        if (!jobId) {
+          try {
+            const list = await getJobs({ kind: 'backtest', activeOnly: true, signal: AbortSignal.timeout(12_000) });
+            const j = list.find((x) => x.kind === 'backtest' && (x.status === 'running' || x.status === 'queued'));
+            if (j) jobId = j.job_id;
+          } catch {
+            /* no-op */
+          }
+        }
+        if (jobId) {
+          const ok = await postJobCancel(jobId);
+          if (typeof console !== 'undefined' && !ok) {
+            console.warn('[cancelBacktest] Server cancel may have failed; job id:', jobId);
+          }
+        }
+        backtestServerJobId = null;
+        backtestAbortController?.abort();
+        const st = getBacktestState();
+        if (st.status === 'running' && (st.results.length > 0 || st.runRequest)) {
+          setBacktestCancelled(st.results, st.runRequest);
+          persistNow();
+          emit();
+        }
+      })();
     },
     resetBacktest() {
       backtestAbortReason = null;
@@ -2755,6 +3016,22 @@ function getActions(): TradingStoreActions {
       botBuildLog = [];
       emit();
     },
+    async refreshOrderRecords() {
+      const { fetchOrders, fetchSLTPEvents } = await import('../core/orderRecords');
+      try {
+        const [nextOrders, nextSlTp] = await Promise.all([
+          fetchOrders({ limit: 1000 }),
+          fetchSLTPEvents({ limit: 1000 }),
+        ]);
+        orders = nextOrders;
+        slTpEvents = nextSlTp;
+        emit();
+      } catch (e) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[TradingStore] refreshOrderRecords failed:', e);
+        }
+      }
+    },
     async loadExecutionLogFromBackend(opts?: { merge?: boolean }) {
       const remote = getRemoteServerUrl();
       if (!remote) return;
@@ -3066,6 +3343,7 @@ function getActions(): TradingStoreActions {
         if (getRemoteServerUrl()) {
           getActions().loadExecutionLogFromBackend({ merge: true }).catch(() => {});
         }
+        startResearchServerSync();
       } catch (err) {
         console.error('loadPersisted failed:', err);
       }

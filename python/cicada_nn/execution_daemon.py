@@ -38,6 +38,15 @@ from .risk import (
     ensemble_decision,
     try_open_position,
 )
+from . import sl_tp_manager
+from .sl_tp_manager import PositionLifecycleState
+from .trade_modes import (
+    OrderSignal,
+    RejectReason,
+    TRADE_MODES,
+    TradeModeRules,
+    validate_order,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +88,25 @@ class BotRuntimeConfig:
     scope_mode: str = "manual"   # 'auto' | 'manual'
     fixed_scope: Optional[str] = None
     allowed_scopes: list[str] = field(default_factory=lambda: ["scalp", "day", "swing"])
+    # Resolved trade style for per-mode rules (validation, SL/TP management).
+    # When None, the daemon falls back to the default rule set (scope-aligned).
+    trade_style: Optional[str] = None
+
+
+@dataclass
+class PositionMeta:
+    """Per-position lifecycle state used by the SL/TP manager and the
+    min-hold gate. Lives in BotState (not in PositionLite) so PositionLite
+    stays a portfolio-snapshot row owned by the broker reconciliation layer.
+    """
+    side: str                 # "LONG" | "SHORT"
+    entry_price: float
+    initial_sl: float
+    initial_tp: float
+    current_sl: float
+    bars_since_open: int = 0
+    partial_taken: bool = False
+    ticket: Optional[int] = None
 
 
 @dataclass
@@ -88,13 +116,25 @@ class BotState:
     last_tick_ts: float = 0.0
     last_event: Optional[dict[str, Any]] = None
     positions: list[PositionLite] = field(default_factory=list)
+    # ticket → PositionMeta. Bug-1 (immediate close) and bug-2 (no dynamic SL)
+    # both need per-position state that survives across ticks. The portfolio
+    # snapshot is rebuilt every tick from the broker, so we can't hang this on
+    # PositionLite — it has to live here.
+    position_meta: dict[int, PositionMeta] = field(default_factory=dict)
 
 
 # Pluggable predict / order callables so the daemon can be unit-tested without
 # spinning up a real broker.
 PredictFn = Callable[[BotRuntimeConfig, list[dict], str, float, float], dict]
 StrategySignalFn = Callable[[BotRuntimeConfig, list[dict], str], int]
-OrderFn = Callable[[BotRuntimeConfig, str, float, float, float, float], dict]
+# OrderFn signature: (cfg, side, size, entry, stop, target, meta) -> dict.
+# ``meta`` carries fields the order callable needs to write the right
+# order_records row (style, magic, validation outcome). The legacy 6-arg form
+# is also supported via TypeError fallback in _tick_once for older callsites.
+OrderFn = Callable[..., dict]
+# Hook the daemon can call once per SL change so the runtime can record the
+# move + push it to MT5. Signature: (bot_id, ticket, kind, sl, tp, price, note).
+SLEventFn = Callable[..., None]
 
 
 class ExecutionDaemon:
@@ -107,8 +147,10 @@ class ExecutionDaemon:
         predict_fn: PredictFn,
         strategy_signal_fn: StrategySignalFn,
         order_fn: OrderFn,
+        sl_event_fn: Optional[SLEventFn] = None,
     ):
         self._lock = threading.Lock()
+        self._sl_event_fn: Optional[SLEventFn] = sl_event_fn
         self._workers: dict[str, threading.Thread] = {}
         self._states: dict[str, BotState] = {}
         self._stop_flags: dict[str, threading.Event] = {}
@@ -273,6 +315,13 @@ class ExecutionDaemon:
         # ATR-as-fraction proxy for volatility scaling
         atr_pct = self._atr_pct(bars, lookback=14)
 
+        # ── Bug-2 fix: advance per-position SL/TP lifecycle BEFORE attempting
+        # new entries. This is the only place SL trail / breakeven / partial
+        # decisions are made; the daemon's submit_order call handles broker IO.
+        rules = self._resolve_rules(cfg)
+        atr_price = atr_pct * price
+        self._advance_open_positions(state, rules, price, atr_price)
+
         # Trade-mode aware scope selection. Honour fixed_scope in manual mode;
         # do equity / drawdown / volatility filtering + regime scoring in auto.
         active_scope = self._select_scope(
@@ -332,13 +381,103 @@ class ExecutionDaemon:
             self._publish_event(state, kind="risk_block", reason=try_result.reason, rule=try_result.rule_id)
             return
 
+        # ── Bug-3 fix: per-mode validation. The validator is pure and never
+        # mutates parameters. On reject we publish + return; the daemon order
+        # path (in daemon_runtime) is responsible for writing the REJECTED row
+        # to order_records (it owns the storage handle).
+        n_concurrent = sum(
+            1 for p in portfolio.positions if p.instrument_id == cfg.instrument_id
+        )
+        bars_since_last_open = self._bars_since_last_open(state)
+        signal = OrderSignal(
+            side=side,                       # type: ignore[arg-type]
+            entry_price=price,
+            stop_loss=try_result.stop_loss,
+            take_profit=try_result.take_profit,
+            confidence=nn_conf,
+        )
+        validation = validate_order(
+            rules,
+            signal,
+            atr=atr_price,
+            n_concurrent=n_concurrent,
+            bars_since_last_open=bars_since_last_open,
+        )
+        if not validation.ok:
+            self._publish_event(
+                state,
+                kind="validate_reject",
+                reason=validation.reason.value,
+                detail=validation.detail,
+                style=rules.style,
+            )
+            # Hand the rejection to the order callable so the runtime can log
+            # it to the append-only order store. The order callable knows how
+            # to short-circuit on a rejected status.
+            try:
+                self._submit_order(
+                    cfg,
+                    side,
+                    try_result.size,
+                    price,
+                    try_result.stop_loss,
+                    try_result.take_profit,
+                    {
+                        "rejected": True,
+                        "reason": validation.reason.value,
+                        "detail": validation.detail,
+                        "confidence": nn_conf,
+                        "style": rules.style,
+                    },
+                )
+            except TypeError:
+                # Older order_fn signature without the meta param — ignore.
+                pass
+            except Exception as e:
+                self._publish_event(state, kind="order_error", reason=str(e))
+            return
+
         try:
             order = self._submit_order(
-                cfg, side, try_result.size, price, try_result.stop_loss, try_result.take_profit
+                cfg,
+                side,
+                try_result.size,
+                price,
+                try_result.stop_loss,
+                try_result.take_profit,
+                {
+                    "rejected": False,
+                    "confidence": nn_conf,
+                    "style": rules.style,
+                    "magic": rules.mt5_magic,
+                },
             )
+        except TypeError:
+            # Backwards-compat for legacy order callables (no meta param).
+            try:
+                order = self._submit_order(
+                    cfg, side, try_result.size, price, try_result.stop_loss, try_result.take_profit
+                )
+            except Exception as e:
+                self._publish_event(state, kind="order_error", reason=str(e))
+                return
         except Exception as e:
             self._publish_event(state, kind="order_error", reason=str(e))
             return
+
+        # Track the new position so SL/TP manager can drive it on subsequent
+        # ticks. Use the broker ticket if returned; otherwise a synthetic id.
+        ticket = int(order.get("ticket") or order.get("order") or 0) if isinstance(order, dict) else 0
+        if ticket > 0:
+            state.position_meta[ticket] = PositionMeta(
+                side=side,
+                entry_price=price,
+                initial_sl=try_result.stop_loss,
+                initial_tp=try_result.take_profit,
+                current_sl=try_result.stop_loss,
+                bars_since_open=0,
+                ticket=ticket,
+            )
         self._publish_event(
             state,
             kind="order",
@@ -350,6 +489,107 @@ class ExecutionDaemon:
             reason=decision.reason,
             order=order,
         )
+
+    # ── Per-mode helpers (Stage 1: bug 1, 2, 3) ─────────────────────────
+
+    @staticmethod
+    def _resolve_rules(cfg: BotRuntimeConfig) -> TradeModeRules:
+        """Resolve trade-mode rules. Prefer explicit ``trade_style``; fall back
+        to the scope default so legacy bots keep working without forcing a
+        migration of every persisted record on first deploy."""
+        if cfg.trade_style and cfg.trade_style in TRADE_MODES:
+            return TRADE_MODES[cfg.trade_style]
+        scope_to_default: dict[str, str] = {
+            "scalp": "scalping",
+            "day": "day",
+            "swing": "swing",
+            "position": "swing",
+        }
+        return TRADE_MODES[scope_to_default.get(cfg.scope, "day")]
+
+    def _bars_since_last_open(self, state: BotState) -> Optional[int]:
+        """Lowest ``bars_since_open`` across this bot's open positions, or None
+        when the bot has no open positions yet (the min-hold gate is then
+        skipped — there's nothing to hold)."""
+        if not state.position_meta:
+            return None
+        return min(m.bars_since_open for m in state.position_meta.values())
+
+    def _advance_open_positions(
+        self,
+        state: BotState,
+        rules: TradeModeRules,
+        current_price: float,
+        atr_price: float,
+    ) -> None:
+        """Bump bar counter and run the per-mode SL/TP policy for every open
+        position. Each SL move is recorded via the optional ``sl_event_fn``
+        hook (the runtime layer writes it to order_records and pushes it to
+        MT5). Pure logic stays in ``sl_tp_manager``; this method is the I/O
+        bridge."""
+        if not state.position_meta:
+            return
+        for ticket, meta in list(state.position_meta.items()):
+            meta.bars_since_open += 1
+            life = PositionLifecycleState(
+                side=meta.side,
+                entry_price=meta.entry_price,
+                initial_sl=meta.initial_sl,
+                initial_tp=meta.initial_tp,
+                current_sl=meta.current_sl,
+                bars_since_open=meta.bars_since_open,
+                partial_taken=meta.partial_taken,
+            )
+            sl_decision = sl_tp_manager.evaluate_sl(rules, life, current_price, atr_price)
+            if sl_decision.new_sl is not None and sl_decision.new_sl != meta.current_sl:
+                kind = "move_be" if "move_be" in sl_decision.note else "trail"
+                meta.current_sl = sl_decision.new_sl
+                self._emit_sl_event(
+                    state,
+                    ticket=ticket,
+                    kind=kind,
+                    sl=sl_decision.new_sl,
+                    price=current_price,
+                    note=sl_decision.note,
+                )
+            tp_decision = sl_tp_manager.evaluate_tp(rules, life, current_price)
+            if tp_decision.take_partial_fraction is not None and not meta.partial_taken:
+                meta.partial_taken = True
+                self._emit_sl_event(
+                    state,
+                    ticket=ticket,
+                    kind="partial_tp",
+                    price=current_price,
+                    note=tp_decision.note,
+                )
+
+    def _emit_sl_event(
+        self,
+        state: BotState,
+        *,
+        ticket: int,
+        kind: str,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+        price: Optional[float] = None,
+        note: str = "",
+    ) -> None:
+        cfg = state.config
+        if self._sl_event_fn is not None:
+            try:
+                self._sl_event_fn(
+                    bot_id=cfg.bot_id,
+                    ticket=ticket,
+                    kind=kind,
+                    sl=sl,
+                    tp=tp,
+                    price=price,
+                    note=note,
+                )
+            except Exception as e:
+                logger.warning("sl_event_fn failed bot=%s ticket=%s kind=%s: %s",
+                               cfg.bot_id, ticket, kind, e)
+        self._publish_event(state, kind=f"sl_{kind}", ticket=ticket, sl=sl, tp=tp, note=note)
 
     @staticmethod
     def _atr_pct(bars: list[dict], lookback: int = 14) -> float:

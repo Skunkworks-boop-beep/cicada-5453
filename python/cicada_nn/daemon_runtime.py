@@ -26,8 +26,10 @@ from typing import Any, Callable, Iterable, Optional
 from .compute import get_compute_config
 from .event_bus import EVENT_BUS
 from .execution_daemon import BotRuntimeConfig, ExecutionDaemon
+from .order_records import OrderRecordStore, OrderStatus, SLTPEventKind
 from .risk import BotRiskParams, PortfolioState, PositionLite
 from .storage import StorageService
+from .trade_modes import TRADE_MODES
 from . import mt5_client
 
 
@@ -184,6 +186,27 @@ def daemon_predict(
 
         ckpt = torch.load(det_path, map_location="cpu", weights_only=True)
         meta = ckpt.get("meta", {})
+        # ── Aggressive safety gate (kill switch) ────────────────────────────
+        # Operator confirmed: this aggressive NEUTRAL gate is the configuration
+        # that produced the +$348 / 42-wins demo run. Softening it to "halve
+        # size + tighten stop" added losing trades. Models below the val_acc
+        # floor return NEUTRAL — the daemon never opens a position on their
+        # raw signal. Strategy-signal fallbacks and the ensemble-confirmed
+        # path can still fire when they agree independently.
+        if meta.get("safe_to_use") is False:
+            logger.warning(
+                "daemon predict refused: bot=%s val_acc=%s below promotion floor",
+                cfg.bot_id, meta.get("val_accuracy"),
+            )
+            return {
+                "action": 2,
+                "confidence": 0.0,
+                "sl_pct": cfg.risk_params.default_stop_loss_pct,
+                "tp_r": cfg.risk_params.default_risk_reward_ratio,
+                "size_multiplier": 1.0,
+                "safe_to_use": False,
+                "warning": "model unsafe (val_acc below floor)",
+            }
         bar_window = int(meta.get("bar_window", cfg.nn_detection_bar_window or 60))
         feat_cfg = BarFeatureConfig(window=bar_window, include_context=True)
         feat = window_features(bars, len(bars) - 1, feat_cfg)
@@ -205,6 +228,8 @@ def daemon_predict(
             "confidence": conf,
             "sl_pct": float(0.01 + 0.04 * raw[1]),
             "tp_r": float(1.0 + 2.0 * raw[2]),
+            "size_multiplier": float(0.5 + 1.5 * raw[0]),
+            "safe_to_use": True,
         }
 
     # Tabular fallback when no detection checkpoint exists yet.
@@ -272,6 +297,21 @@ def daemon_strategy_signal(cfg: BotRuntimeConfig, bars: list[dict], regime: str)
 # ── Order placement: events-only stub (real broker plumbing in next round) ──
 
 
+# Lazy storage handle so tests can swap an isolated tmp dir in.
+_ORDER_STORE: Optional[OrderRecordStore] = None
+
+
+def set_order_store(store: Optional[OrderRecordStore]) -> None:
+    """Inject (or clear) the OrderRecordStore the daemon writes to. Called by
+    the API startup hook with ``StorageService.orders``."""
+    global _ORDER_STORE
+    _ORDER_STORE = store
+
+
+def get_order_store() -> Optional[OrderRecordStore]:
+    return _ORDER_STORE
+
+
 def daemon_submit_order(
     cfg: BotRuntimeConfig,
     side: str,
@@ -279,10 +319,150 @@ def daemon_submit_order(
     entry: float,
     stop: float,
     target: float,
+    meta: Optional[dict] = None,
 ) -> dict:
-    """Submit an order. Today: emit an event so the FE can show the intent.
-    Wire to MT5/Deriv brokers in the next pass; the entry point is intentionally
-    one function so swap-in is mechanical."""
+    """Submit an order. Writes a row to the append-only ``orders`` store, then
+    either publishes a stub event (current behaviour, no live MT5 placement
+    from the daemon yet) or — when MT5 is connected and the bot is wired for
+    live execution — calls ``mt5_client.order_send`` with the per-mode magic.
+
+    ``meta`` is supplied by the daemon and carries the validation outcome,
+    confidence, style, and magic. When ``meta['rejected']`` is True we record
+    a REJECTED row and return without touching the broker."""
+    meta = meta or {}
+    store = _ORDER_STORE
+    style = str(meta.get("style") or cfg.trade_style or "day")
+    magic = int(meta.get("magic") or 0)
+    confidence = meta.get("confidence")
+
+    if meta.get("rejected"):
+        if store is not None:
+            try:
+                store.append_order(
+                    bot_id=cfg.bot_id,
+                    instrument_id=cfg.instrument_id,
+                    instrument_symbol=cfg.instrument_symbol,
+                    style=style,
+                    side=side,
+                    size=size,
+                    entry_price=entry,
+                    stop_loss=stop,
+                    take_profit=target,
+                    confidence=float(confidence) if confidence is not None else None,
+                    status=OrderStatus.REJECTED,
+                    reason=str(meta.get("reason") or "rejected"),
+                )
+            except Exception as e:
+                logger.warning("order_records append (rejected) failed bot=%s: %s", cfg.bot_id, e)
+        EVENT_BUS.publish(
+            "order",
+            bot_id=cfg.bot_id,
+            instrument_id=cfg.instrument_id,
+            instrument_symbol=cfg.instrument_symbol,
+            side=side,
+            size=size,
+            entry=entry,
+            stop=stop,
+            target=target,
+            ts=time.time(),
+            broker="stub",
+            status="rejected",
+            reason=str(meta.get("reason") or "rejected"),
+            detail=str(meta.get("detail") or ""),
+        )
+        return {"status": "rejected", "reason": meta.get("reason"), "detail": meta.get("detail")}
+
+    # Record INTENT first so a broker error still leaves a trace.
+    intent_id = None
+    if store is not None:
+        try:
+            intent_id = store.append_order(
+                bot_id=cfg.bot_id,
+                instrument_id=cfg.instrument_id,
+                instrument_symbol=cfg.instrument_symbol,
+                style=style,
+                side=side,
+                size=size,
+                entry_price=entry,
+                stop_loss=stop,
+                take_profit=target,
+                confidence=float(confidence) if confidence is not None else None,
+                status=OrderStatus.INTENT,
+            )
+        except Exception as e:
+            logger.warning("order_records append (intent) failed bot=%s: %s", cfg.bot_id, e)
+
+    ticket: int = 0
+    broker = "stub"
+    error: Optional[str] = None
+    if mt5_client.is_connected() and (cfg.instrument_symbol or "").strip():
+        try:
+            ok, result = mt5_client.order_send(
+                symbol=cfg.instrument_symbol,
+                side="buy" if side == "LONG" else "sell",
+                volume=float(size),
+                sl=float(stop) if stop > 0 else None,
+                tp=float(target) if target > 0 else None,
+                magic=magic,
+                comment=f"cicada-{style}",
+            )
+            broker = "mt5"
+            if ok:
+                ticket = int(result.get("ticket") or 0)
+            else:
+                error = str(result.get("error") or "order failed")
+        except Exception as e:
+            error = str(e)
+            logger.warning("mt5 order_send raised bot=%s: %s", cfg.bot_id, e)
+
+    if store is not None:
+        try:
+            if error is not None:
+                store.append_order(
+                    bot_id=cfg.bot_id,
+                    instrument_id=cfg.instrument_id,
+                    instrument_symbol=cfg.instrument_symbol,
+                    style=style,
+                    side=side,
+                    size=size,
+                    entry_price=entry,
+                    stop_loss=stop,
+                    take_profit=target,
+                    confidence=float(confidence) if confidence is not None else None,
+                    status=OrderStatus.BROKER_ERROR,
+                    reason=error,
+                    ticket=ticket if ticket > 0 else None,
+                )
+            else:
+                final_status = OrderStatus.SUBMITTED if broker == "stub" else OrderStatus.FILLED
+                store.append_order(
+                    bot_id=cfg.bot_id,
+                    instrument_id=cfg.instrument_id,
+                    instrument_symbol=cfg.instrument_symbol,
+                    style=style,
+                    side=side,
+                    size=size,
+                    entry_price=entry,
+                    stop_loss=stop,
+                    take_profit=target,
+                    confidence=float(confidence) if confidence is not None else None,
+                    status=final_status,
+                    ticket=ticket if ticket > 0 else None,
+                )
+                # Initial SL/TP is the first sl_tp_events row for this ticket.
+                if ticket > 0:
+                    store.append_sl_tp_event(
+                        ticket=ticket,
+                        bot_id=cfg.bot_id,
+                        kind=SLTPEventKind.INITIAL,
+                        sl=stop,
+                        tp=target,
+                        price=entry,
+                        note=f"open {side} {style}",
+                    )
+        except Exception as e:
+            logger.warning("order_records append (final) failed bot=%s: %s", cfg.bot_id, e)
+
     EVENT_BUS.publish(
         "order",
         bot_id=cfg.bot_id,
@@ -294,9 +474,66 @@ def daemon_submit_order(
         stop=stop,
         target=target,
         ts=time.time(),
-        broker="stub",
+        broker=broker,
+        ticket=ticket or None,
+        status="error" if error else "queued",
+        error=error,
     )
-    return {"status": "queued", "side": side, "size": size, "entry": entry}
+    return {
+        "status": "error" if error else "queued",
+        "side": side,
+        "size": size,
+        "entry": entry,
+        "ticket": ticket if ticket > 0 else None,
+        "error": error,
+        "intent_id": intent_id,
+    }
+
+
+def daemon_sl_event(
+    *,
+    bot_id: str,
+    ticket: int,
+    kind: str,
+    sl: Optional[float] = None,
+    tp: Optional[float] = None,
+    price: Optional[float] = None,
+    note: str = "",
+) -> None:
+    """SL/TP-modification hook called from the daemon's per-tick lifecycle.
+    Records the change in ``order_records.sl_tp_events`` (NEW row, never an
+    update) and pushes the modification to MT5 when applicable."""
+    store = _ORDER_STORE
+    if store is not None:
+        try:
+            store.append_sl_tp_event(
+                ticket=ticket,
+                bot_id=bot_id,
+                kind=kind,
+                sl=sl,
+                tp=tp,
+                price=price,
+                note=note,
+            )
+        except Exception as e:
+            logger.warning("order_records append (sl event) failed bot=%s ticket=%s: %s",
+                           bot_id, ticket, e)
+    if sl is not None and mt5_client.is_connected():
+        try:
+            mt5_client.modify_sl(ticket=ticket, symbol="", new_sl=sl, new_tp=tp)
+        except Exception as e:
+            logger.warning("mt5 modify_sl failed bot=%s ticket=%s: %s", bot_id, ticket, e)
+    EVENT_BUS.publish(
+        "sl_tp_event",
+        bot_id=bot_id,
+        ticket=ticket,
+        kind=kind,
+        sl=sl,
+        tp=tp,
+        price=price,
+        note=note,
+        ts=time.time(),
+    )
 
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -329,6 +566,7 @@ def get_daemon() -> ExecutionDaemon:
             predict_fn=daemon_predict,
             strategy_signal_fn=daemon_strategy_signal,
             order_fn=daemon_submit_order,
+            sl_event_fn=daemon_sl_event,
         )
     return _DAEMON
 
@@ -352,6 +590,15 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
             # mapping is intentionally tolerant — missing fields fall back to
             # safe defaults rather than refusing to deploy.
             risk = (raw.get("riskParams") or {})
+            # Resolve trade style: prefer explicit fixedStyle, fall back to
+            # the first fixedStyles entry, then to the first style in the
+            # bot's strategy mix. None means "use scope default" — the daemon
+            # will resolve to a real TradeModeRules either way.
+            trade_style = (
+                raw.get("fixedStyle")
+                or (raw.get("fixedStyles") or [None])[0]
+                or (raw.get("styles") or [None])[0]
+            )
             cfg = BotRuntimeConfig(
                 bot_id=str(raw.get("id") or ""),
                 instrument_id=str(raw.get("instrumentId") or ""),
@@ -359,6 +606,7 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
                 instrument_type=str(raw.get("instrumentType") or "fiat"),
                 primary_timeframe=str((raw.get("timeframes") or ["M5"])[0]),
                 scope=str(raw.get("fixedScope") or "day"),
+                trade_style=str(trade_style) if trade_style else None,
                 risk_params=BotRiskParams(
                     risk_per_trade_pct=float(risk.get("riskPerTradePct") or 0.01),
                     max_drawdown_pct=float(risk.get("maxDrawdownPct") or 0.15),

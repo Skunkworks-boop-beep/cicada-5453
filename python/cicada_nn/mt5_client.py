@@ -359,6 +359,8 @@ def order_send(
     volume: float,
     sl: float | None = None,
     tp: float | None = None,
+    magic: int = 0,
+    comment: str | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """
     Send a market order to MT5.
@@ -367,6 +369,8 @@ def order_send(
     :param volume: Lot size (e.g. 0.01).
     :param sl: Stop loss price (optional).
     :param tp: Take profit price (optional).
+    :param magic: Per-mode magic number (see trade_modes.TRADE_MODES.mt5_magic).
+    :param comment: Optional broker comment (defaults to "cicada-5453").
     :return: (success, result dict with order/ticket or error).
     """
     if not MT5_AVAILABLE or mt5 is None:
@@ -386,8 +390,8 @@ def order_send(
         "type": order_type,
         "price": price,
         "deviation": 20,
-        "magic": 0,
-        "comment": "cicada-5453",
+        "magic": int(magic),
+        "comment": comment or "cicada-5453",
     }
     if sl is not None and sl > 0:
         request["sl"] = round(sl, 5)
@@ -400,6 +404,45 @@ def order_send(
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         return False, {"error": result.comment or f"retcode {result.retcode}", "retcode": result.retcode}
     return True, {"order": result.order, "ticket": result.order, "price": result.price, "volume": result.volume}
+
+
+def modify_sl(
+    ticket: int,
+    symbol: str,
+    new_sl: float,
+    new_tp: float | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    """
+    Modify SL (and optionally TP) of an open position via TRADE_ACTION_SLTP.
+    Used by the per-mode SL/TP manager to implement breakeven moves and
+    trailing stops as new MT5 modifications (each one also recorded as a new
+    row in ``order_records.sl_tp_events`` by the caller).
+    :param ticket: Position ticket.
+    :param symbol: MT5 symbol.
+    :param new_sl: New stop-loss price.
+    :param new_tp: Optional new take-profit price.
+    :return: (success, result dict or error).
+    """
+    if not MT5_AVAILABLE or mt5 is None:
+        return False, {"error": "MetaTrader5 not available"}
+    sym = (symbol or "").replace("/", "").strip().upper()
+    if not sym:
+        return False, {"error": "Invalid symbol"}
+    request: dict[str, Any] = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": sym,
+        "position": int(ticket),
+        "sl": round(float(new_sl), 5),
+    }
+    if new_tp is not None and new_tp > 0:
+        request["tp"] = round(float(new_tp), 5)
+    result = mt5.order_send(request)
+    if result is None:
+        err = mt5.last_error()
+        return False, {"error": err[1] if err else "Modify failed"}
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return False, {"error": result.comment or f"retcode {result.retcode}", "retcode": result.retcode}
+    return True, {"ticket": int(ticket), "sl": new_sl, "tp": new_tp}
 
 
 def position_close_partial(

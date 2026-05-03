@@ -1,6 +1,7 @@
 import { Target, Zap, TrendingUp, Crosshair, BarChart3, Check } from 'lucide-react';
 import { useTradingStore } from '../store/TradingStore';
 import { STYLE_TO_SCOPE } from '../core/scope';
+import { TRADE_MODES } from '../core/tradeModes';
 import type { TradeStyle } from '../core/types';
 
 const ALL_STYLE_IDS: TradeStyle[] = ['scalping', 'day', 'medium_swing', 'swing', 'sniper'];
@@ -12,6 +13,14 @@ const MODES: { id: TradeStyle; name: string; icon: typeof Zap; description: stri
   { id: 'swing', name: 'SWING', icon: Target, description: '4H–D1 positions' },
   { id: 'sniper', name: 'SNIPER', icon: Crosshair, description: 'Precision entry/exit any scope' },
 ];
+
+/** SL-management label keyed off the canonical TRADE_MODES table. */
+const SL_MGMT_LABEL: Record<string, string> = {
+  static: 'STATIC SL',
+  trail_after_1r: 'TRAIL @1R',
+  be_then_trail: 'BE@1R + TRAIL',
+  trail_from_entry: 'TRAIL FROM ENTRY',
+};
 
 export function TradingModes() {
   const { state, actions } = useTradingStore();
@@ -161,9 +170,20 @@ export function TradingModes() {
                   <span className="text-xs text-[#00ff00] font-medium">{mode.name}</span>
                 </div>
                 <div className="text-[10px] text-[#00ff00] opacity-70 mb-2">{mode.description}</div>
-                <div className={`text-[10px] ${count === 0 ? 'text-[#ff6600]/60' : 'text-[#ff6600]'}`}>
+                <div className={`text-[10px] ${count === 0 ? 'text-[#ff6600]/60' : 'text-[#ff6600]'} mb-2`}>
                   &gt; Strategies: {count}{count === 0 ? ' (disabled)' : ''}
                 </div>
+                {(() => {
+                  const r = TRADE_MODES[mode.id];
+                  if (!r) return null;
+                  return (
+                    <div className="text-[10px] text-[#00ff00]/70 leading-tight w-full">
+                      <div>&gt; HOLD&gt;{r.minHoldBars}B &middot; CONF&gt;{r.confidenceThreshold.toFixed(2)}</div>
+                      <div>&gt; TP&gt;{r.minTpAtr}xATR &middot; SL&gt;{r.minSlAtr}-{r.maxSlAtr}xATR</div>
+                      <div>&gt; MAX&gt;{r.maxConcurrent} &middot; {SL_MGMT_LABEL[r.slManagement] ?? r.slManagement}</div>
+                    </div>
+                  );
+                })()}
               </button>
             );
           })}

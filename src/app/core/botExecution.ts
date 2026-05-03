@@ -21,6 +21,7 @@ import { buildHtfIndexForEachLtfBar, getHigherTimeframe } from './multiTimeframe
 import type { SignalContext } from './signals';
 import { inferPointSize } from './spreadUtils';
 import { STYLE_TO_SCOPE } from './scope';
+import { TRADE_MODES } from './tradeModes';
 import { getSignalFn } from './signals';
 
 /** Regime detection lookback (bars). Used for volatility/trend; must match detectRegime. */
@@ -37,20 +38,26 @@ const REGIME_CONFIDENCE_ENTRY_MIN = 0.35;
 const FALLBACK_SINGLE_VOTE_MAX_NN_CONF = 0.25;
 
 /**
- * Max positions per instrument based on regime confidence. Higher confidence
- * → more entries allowed. Now also respects the bot's configured
- * ``maxPositions`` (upper bound) so a high-confidence regime can't push a
- * single instrument beyond the bot's portfolio-wide cap.
+ * Max positions per instrument. Stage 1 prefers the per-mode ``maxConcurrent``
+ * from ``TRADE_MODES`` when the bot has a resolved style — that is, the
+ * SCALPING bot gets 3, SNIPER gets 1, etc. — and falls back to the legacy
+ * confidence cascade only when style is unresolved (auto mode without a
+ * fixed pick).
  */
 function getMaxPositionsPerInstrument(
   confidence: number,
-  botMaxPositions: number = Number.POSITIVE_INFINITY
+  botMaxPositions: number = Number.POSITIVE_INFINITY,
+  resolvedStyle: TradeStyle | null = null
 ): number {
-  const cfg = DEFAULT_SCOPE_SELECTOR_CONFIG;
   let cap: number;
-  if (confidence >= cfg.confidenceForThirdEntry) cap = Math.min(3, cfg.maxPositionsPerInstrument);
-  else if (confidence >= cfg.confidenceForSecondEntry) cap = Math.min(2, cfg.maxPositionsPerInstrument);
-  else cap = 1;
+  if (resolvedStyle && TRADE_MODES[resolvedStyle]) {
+    cap = TRADE_MODES[resolvedStyle].maxConcurrent;
+  } else {
+    const cfg = DEFAULT_SCOPE_SELECTOR_CONFIG;
+    if (confidence >= cfg.confidenceForThirdEntry) cap = Math.min(3, cfg.maxPositionsPerInstrument);
+    else if (confidence >= cfg.confidenceForSecondEntry) cap = Math.min(2, cfg.maxPositionsPerInstrument);
+    else cap = 1;
+  }
   if (!Number.isFinite(botMaxPositions) || botMaxPositions <= 0) return cap;
   return Math.max(1, Math.min(cap, Math.floor(botMaxPositions)));
 }
@@ -387,12 +394,15 @@ export type BotExecutionEventPhase =
   | 'select_scope'
   | 'predict'
   | 'risk_check'
+  | 'validate'
   | 'order'
   | 'close'
   | 'skipped'
   | 'trade_open'
   | 'trade_close'
-  | 'broker';
+  | 'broker'
+  | 'sl_modify'
+  | 'tp_partial';
 
 export type BotExecutionEventOutcome = 'success' | 'fail' | 'skip' | 'ignored' | 'disconnect';
 
@@ -1007,7 +1017,11 @@ export async function runBotExecution(params: BotExecutionParams): Promise<void>
         continue;
       }
 
-      const maxPerInstrument = getMaxPositionsPerInstrument(confidence, bot.maxPositions);
+      const maxPerInstrument = getMaxPositionsPerInstrument(
+        confidence,
+        bot.maxPositions,
+        pipeline.style as TradeStyle,
+      );
       const existingForInstrumentCount = freshPortfolio.positions.filter((p) => p.instrumentId === inst.id).length;
       if (existingForInstrumentCount >= maxPerInstrument) {
         emitEvent(onEvent, bot.id, symbol, 'risk_check', 'skip', `Max ${maxPerInstrument} position(s) per instrument`, {
@@ -1313,6 +1327,16 @@ export async function runPositionEvaluation(params: PositionEvalParams): Promise
 
     const currentPrice = bars[bars.length - 1]?.close ?? 0;
     if (currentPrice <= 0) continue;
+
+    if (inst.brokerId === 'broker-deriv') {
+      emitEvent(onEvent, bot.id, symbol, 'close', 'skip', 'Deriv fixed-duration contract: waiting for expiry', {
+        positionId: pos.id,
+        reason: 'deriv_fixed_duration_no_early_close',
+        action,
+        scope: posScope,
+      }, cycleId);
+      continue;
+    }
 
     const closeRes = await closeBrokerPosition({
       positionId: pos.id,

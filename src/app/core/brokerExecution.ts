@@ -1,20 +1,18 @@
 /**
- * Broker order placement: routes to Deriv or MT5 based on instrument and connection.
- * Used by bot execution only. Volume is rounded per instrument constraints (min/max/step).
+ * Broker order placement: MT5-only execution path.
+ *
+ * Stage 1 of the spec rebuild explicitly narrows execution to MT5. Deriv and
+ * Exness remain as read-only data sources (price quotes, instrument registry,
+ * ticks for charts) but their order-placement code paths are removed —
+ * routing an order to a Deriv broker now returns a ``data-only`` rejection
+ * instead of placing a contract. The bot has to target an MT5 broker.
+ *
+ * Volume is rounded per instrument constraints (min/max/step).
  */
 
 import type { BrokerConfig, Instrument } from './types';
 import { computeVolumeForOrder, getVolumeConstraints } from './volumeUtils';
-
-/** Deriv stake as fraction of notional (size * entryPrice). Min 1, max 100. */
-const DERIV_STAKE_FACTOR = 0.01;
-const DERIV_STAKE_MIN = 1;
-const DERIV_STAKE_MAX = 100;
-/** Deriv contract duration (ticks). */
-const DERIV_DURATION = 5;
-const DERIV_DURATION_UNIT = 't' as const;
 import { BROKER_DERIV_ID } from './registries';
-import { getDerivProposal, buyDerivContract, getDerivApiSymbolForRequest, getActiveSyntheticSymbols, isConnected as derivIsConnected } from './derivApi';
 import { postMt5Order, postMt5ClosePartial } from './api';
 
 export interface PlaceOrderParams {
@@ -34,8 +32,9 @@ export interface PlaceOrderParams {
 export type PlaceOrderResult = { success: true; volume: number; contractId?: number; ticket?: number } | { success: false; error: string };
 
 /**
- * Place an order with the connected broker (Deriv or MT5).
- * For Deriv: proposal → buy. For MT5: postMt5Order.
+ * Place an order with the connected MT5 broker. Deriv-routed orders are
+ * rejected with a data-only error so the bot can either re-route to MT5
+ * or surface the misconfiguration to the user.
  */
 export async function placeBrokerOrder(params: PlaceOrderParams): Promise<PlaceOrderResult> {
   const { symbol, side, size, entryPrice, stopLoss, takeProfit, brokerId, brokers } = params;
@@ -45,25 +44,14 @@ export async function placeBrokerOrder(params: PlaceOrderParams): Promise<PlaceO
   const targetSize = volResult.targetSize;
   const broker = brokers.find((b) => b.id === brokerId);
 
-  if (brokerId === BROKER_DERIV_ID) {
-    if (broker?.status !== 'connected' || !derivIsConnected()) {
-      return { success: false, error: 'Deriv not connected' };
-    }
-    try {
-      const { symbols: apiSymbols } = await getActiveSyntheticSymbols();
-      const derivSymbol = getDerivApiSymbolForRequest(symbol, apiSymbols);
-      const contractType = side === 'LONG' ? 'CALL' : 'PUT';
-      const stake = Math.max(DERIV_STAKE_MIN, Math.min(DERIV_STAKE_MAX, Math.round(volume * entryPrice * DERIV_STAKE_FACTOR)));
-      const { proposal_id, ask_price } = await getDerivProposal(derivSymbol, contractType, stake, DERIV_DURATION, DERIV_DURATION_UNIT);
-      const { contract_id } = await buyDerivContract(proposal_id, ask_price);
-      return { success: true, volume: targetSize, contractId: contract_id };
-    } catch (e) {
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn('[brokerExecution] Deriv order failed:', e);
-      }
-      return { success: false, error: e instanceof Error ? e.message : 'Deriv order failed' };
-    }
+  if (brokerId === BROKER_DERIV_ID || broker?.type === 'deriv_api') {
+    return {
+      success: false,
+      error: 'Deriv is data-only; route order to an MT5 broker',
+    };
   }
+
+  void entryPrice;  // kept for signature stability — MT5 prices at request time
 
   const mt5Broker = brokers.find((b) => b.type === 'mt5' && b.status === 'connected');
   const useMt5 = (broker?.type === 'mt5' || broker?.type === 'exness_api') && mt5Broker;
@@ -95,7 +83,7 @@ export async function placeBrokerOrder(params: PlaceOrderParams): Promise<PlaceO
     return { success: true, volume: targetSize, ticket };
   }
 
-  return { success: false, error: 'No broker connected for this instrument' };
+  return { success: false, error: 'No MT5 broker connected for this instrument' };
 }
 
 export interface ClosePositionParams {
@@ -111,12 +99,14 @@ export interface ClosePositionParams {
 export type ClosePositionResult = { success: true } | { success: false; error: string };
 
 /**
- * Close an open position at market. MT5: close by ticket. Deriv tick contracts: not supported (fixed duration).
+ * Close an open position at market via MT5. Deriv-routed positions are
+ * rejected: Deriv is data-only in Stage 1, and Deriv tick contracts can't be
+ * closed early anyway (fixed duration).
  */
 export async function closeBrokerPosition(params: ClosePositionParams): Promise<ClosePositionResult> {
   const { positionId, symbol, type, size, brokerId, brokers } = params;
-  if (brokerId === BROKER_DERIV_ID) {
-    return { success: false, error: 'Deriv tick contracts cannot be closed early; they expire at fixed duration.' };
+  if (brokerId === BROKER_DERIV_ID || brokers.find((b) => b.id === brokerId)?.type === 'deriv_api') {
+    return { success: false, error: 'Deriv is data-only; cannot close via Deriv' };
   }
   const mt5Broker = brokers.find((b) => b.type === 'mt5' && b.status === 'connected');
   const useMt5 = (brokers.find((b) => b.id === brokerId)?.type === 'mt5' || brokers.find((b) => b.id === brokerId)?.type === 'exness_api') && mt5Broker;
@@ -140,5 +130,5 @@ export async function closeBrokerPosition(params: ClosePositionParams): Promise<
     if ('error' in res) return { success: false, error: res.error };
     return { success: true };
   }
-  return { success: false, error: 'No broker connected for closing this position' };
+  return { success: false, error: 'No MT5 broker connected for closing this position' };
 }

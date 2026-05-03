@@ -19,12 +19,15 @@ const PHASE_LABELS: Record<BotExecutionEventPhase, string> = {
   select_scope: 'Scope',
   predict: 'Predict',
   risk_check: 'Risk',
+  validate: 'Validate',
   order: 'Order',
   close: 'Close',
   skipped: 'Skip',
   trade_open: 'Trade Open',
   trade_close: 'Trade Close',
   broker: 'Broker',
+  sl_modify: 'SL Modify',
+  tp_partial: 'TP Partial',
 };
 
 function phaseLabel(phase: string): string {

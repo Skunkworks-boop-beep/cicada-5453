@@ -125,6 +125,11 @@ def _bootstrap_daemon():
         if cleared:
             logger.info("cleared %d stale shadow job(s) on startup", cleared)
         hydrate_portfolio_from_storage(STORAGE)
+        # Wire the order_records SQLite store into daemon_runtime so every
+        # validation outcome and SL/TP modification is captured. Without this
+        # the daemon falls back to event-only logging (the legacy path).
+        from .daemon_runtime import set_order_store
+        set_order_store(STORAGE.orders)
         launched = hydrate_and_launch_from_storage(STORAGE)
         EVENT_BUS.publish("daemon", kind="boot", launched=launched, stale_shadow_cleared=cleared)
     except Exception:
@@ -273,6 +278,64 @@ def daemon_set_symbols(req: DaemonSymbolMapRequest):
     return {"ok": True, "count": len(req.symbols)}
 
 
+# ── Append-only order records (Stage 1 spec §6) ────────────────────────────
+
+
+@app.get("/orders")
+def list_orders(bot_id: str | None = None, ticket: int | None = None,
+                since: float | None = None, limit: int = 1000):
+    """Read the append-only orders projection. Frontend uses this to drive
+    the rejection / SL-modification UI rows. Never returns mutated state."""
+    rows = STORAGE.orders.list_orders(
+        bot_id=bot_id, ticket=ticket, since=since, limit=min(int(limit), 5000)
+    )
+    return {"rows": [_order_row_to_json(r) for r in rows]}
+
+
+@app.get("/sl_tp_events")
+def list_sl_tp_events(ticket: int | None = None, bot_id: str | None = None,
+                      since: float | None = None, limit: int = 1000):
+    rows = STORAGE.orders.list_sl_tp_events(
+        ticket=ticket, bot_id=bot_id, since=since, limit=min(int(limit), 5000)
+    )
+    return {"rows": [_sl_tp_row_to_json(r) for r in rows]}
+
+
+def _order_row_to_json(r) -> dict:
+    return {
+        "id": r.id,
+        "bot_id": r.bot_id,
+        "instrument_id": r.instrument_id,
+        "instrument_symbol": r.instrument_symbol,
+        "style": r.style,
+        "side": r.side,
+        "size": r.size,
+        "entry_price": r.entry_price,
+        "stop_loss": r.stop_loss,
+        "take_profit": r.take_profit,
+        "confidence": r.confidence,
+        "status": r.status,
+        "reason": r.reason,
+        "ticket": r.ticket,
+        "data_source": r.data_source,
+        "ts": r.ts,
+    }
+
+
+def _sl_tp_row_to_json(r) -> dict:
+    return {
+        "id": r.id,
+        "ticket": r.ticket,
+        "bot_id": r.bot_id,
+        "kind": r.kind,
+        "sl": r.sl,
+        "tp": r.tp,
+        "price": r.price,
+        "note": r.note,
+        "ts": r.ts,
+    }
+
+
 # ── SSE event stream ───────────────────────────────────────────────────────
 # The frontend opens GET /events once and receives every state-change event
 # (trades, bot ticks, jobs, shadow promotions, log lines) in real time. The
@@ -390,6 +453,22 @@ def cancel_job(job_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="job not found or already finished")
     return {"cancelled": True, "job_id": job_id}
+
+
+@app.get("/audit/models")
+def audit_models():
+    """Scan every detection-model meta file and report which models are unsafe.
+
+    Returned shape: ``{ total, ok, unsafe, inverted, entries: [...] }``. Each
+    entry carries instrument_id, timeframe, val_accuracy, the verdict
+    (``ok`` / ``below_floor`` / ``inverted`` / ``missing_metric``), and the
+    inversion_score that quantifies how systematically wrong the model is.
+
+    The dashboard polls this every minute so the operator immediately sees
+    the bots that must be retrained before being allowed to trade.
+    """
+    from .model_audit import audit_checkpoints, audit_summary
+    return audit_summary(audit_checkpoints(CHECKPOINT_DIR))
 
 
 @app.get("/compute")
@@ -828,13 +907,16 @@ def predict(req: PredictRequest):
                     # Map to response actions: 0=long, 1=short, 2=neutral.
                     action = 1 if pred == 0 else (0 if pred == 1 else 2)
 
-                    # ── Safety floor on per-TF detection model ──────────────
-                    # When the trained model failed to clear the random-baseline
-                    # promotion floor we *do not* let it trade. The action is
-                    # forced to NEUTRAL and ``safe_to_use=False`` is returned so
-                    # the daemon can short-circuit and surface a warning. This
-                    # is the gate that catches the "val_acc=0.7%" failure mode
-                    # the operator hit in production.
+                    # ── Aggressive safety floor (kill switch) ────────────────
+                    # Operator measurement: with this aggressive NEUTRAL gate
+                    # in place, the live bot recorded 42 wins / 0 losses on
+                    # demo R_10 (+$348). Softening to "halve size + tighten
+                    # stop" let unsafe-model entries through and the bot
+                    # turned net-negative. So we force NEUTRAL on any model
+                    # below the val_accuracy floor — the trade only fires
+                    # when *some* path (strategy-only fallback, ensemble
+                    # confirmation) explicitly approves it, never on a
+                    # degenerate model's raw signal alone.
                     safe_flag = bool(meta.get("safe_to_use", True))
                     val_acc = meta.get("val_accuracy")
                     inversion = meta.get("inversion_score")
@@ -1697,6 +1779,7 @@ def backtest_run_stream(req: BacktestRunRequest):
                     prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
                     instrument_types=getattr(req, "instrument_types", None) or None,
                     max_workers=max_workers,
+                    job_id=job.job_id,
                 )
                 if use_parallel
                 else run_server_backtest_stream(
@@ -1746,6 +1829,12 @@ def backtest_run_stream(req: BacktestRunRequest):
                     "total": total,
                     "progress": progress,
                 }) + "\n"
+            if JOB_MANAGER.should_cancel(job.job_id):
+                JOB_MANAGER.mark_done(
+                    job.job_id, succeeded=False, message="cancelled by client"
+                )
+                yield json.dumps({"type": "cancelled", "results": results}) + "\n"
+                return
             JOB_MANAGER.mark_done(job.job_id, succeeded=True, message=f"{len(results)} rows")
             yield json.dumps({"type": "done", "results": results, "status": "completed"}) + "\n"
         except Exception as e:

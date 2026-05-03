@@ -2,6 +2,8 @@
 
 This guide walks you through connecting **Deriv** and **eXness (MT5)** so the app can use **live data** for backtesting and (when wired) execution. Until at least one broker is connected, the dashboard shows **DISCONNECTED**; backtest will fail (no synthetic fallback). After connecting, it shows **LIVE** and backtests use live candles.
 
+> **Stage 1 narrowing (cicada-5453)** — Execution is **MT5-only**. Deriv and eXness remain as read-only data sources (price quotes, instrument registry, ticks for charts) and are labelled `(data-only)` in the BrokersManager. Routing an order to a Deriv broker returns a `data-only` rejection — the bot must target an MT5 broker for live execution. See `docs/BUGS_FIXED.md` items 13–17.
+
 ---
 
 ## 1. What “LIVE” means in the app

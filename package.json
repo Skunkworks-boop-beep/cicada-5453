@@ -13,9 +13,10 @@
     "verify-strategy-mapping": "tsx scripts/verify-strategy-mapping.ts",
     "verify-backtest": "tsx scripts/verify-backtest-full.ts",
     "verify-trading-mode": "tsx scripts/verify-trading-mode.ts",
+    "verify-trade-mode-parity": "tsx scripts/verify-trade-mode-parity.ts",
     "test:coverage": "vitest run --coverage",
     "verify-backend-wiring": "tsx scripts/verify-backend-wiring.ts",
-    "verify-all": "tsx scripts/verify-backend-wiring.ts && tsx scripts/verify-build-selection.ts && tsx scripts/verify-strategy-mapping.ts && tsx scripts/verify-backtest-full.ts && tsx scripts/verify-trading-mode.ts",
+    "verify-all": "tsx scripts/verify-backend-wiring.ts && tsx scripts/verify-build-selection.ts && tsx scripts/verify-strategy-mapping.ts && tsx scripts/verify-backtest-full.ts && tsx scripts/verify-trading-mode.ts && tsx scripts/verify-trade-mode-parity.ts",
     "test:backward-validation": "cd python && ./venv/bin/python -m pytest tests/test_backward_validation.py tests/test_backward_validation_api.py -v",
     "test": "npm run verify-all"
   },

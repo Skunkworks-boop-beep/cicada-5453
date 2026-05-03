@@ -1,5 +1,17 @@
 # Bugs Fixed (Audit)
 
+## Stage 1 — Geometric refactor (cicada-5453)
+
+13. **Immediate close on entry bar** — The execution daemon could exit a position on the same bar it opened it. Fixed: `python/cicada_nn/sl_tp_manager.py:can_exit` and the per-mode `min_hold_bars` in `trade_modes.TRADE_MODES` gate signal-driven exits until the bar count clears. SCALPING = 3, DAY = 6, MED_SWING = 8, SWING = 12, SNIPER = 6.
+
+14. **No dynamic SL** — Orders were placed with an initial SL/TP and never modified after entry, even for SWING bots that should breakeven-trail at +1R. Fixed: `python/cicada_nn/sl_tp_manager.evaluate_sl/evaluate_tp` runs every tick from `execution_daemon._advance_open_positions`; every move is a NEW row in `sl_tp_events`, and (when MT5 is connected) pushed via `mt5_client.modify_sl`.
+
+15. **Modes share validation logic** — One risk-engine call validated every signal regardless of the bot's trade style. Fixed: `python/cicada_nn/trade_modes.validate_order` is the single per-mode gate; rejections write a `REJECTED` row to `orders` with the reject reason and never coerce parameters.
+
+16. **Incomplete order records (paper trades)** — Order lifecycle was JSON with overwrites; modifications and rejections vanished from the audit trail. Fixed: `python/cicada_nn/order_records.OrderRecordStore` (SQLite WAL, append-only) — every status transition and every SL/TP modification is a new row, never an update. Verified by `python/tests/test_order_records.py`.
+
+17. **MT5-only execution narrowing** — Order placement is now MT5-only; Deriv and Exness are read-only data sources. `src/app/core/brokerExecution.ts` rejects Deriv-routed orders with a `data-only` reason. `BrokersManager` UI labels Deriv and eXness as `(data-only)`.
+
 ## Critical
 
 1. **Python backtest: no regime filtering** — Server produced identical rows for every regime. Fixed: added `regime_detection.py`, only enter when `regime_at_bar === job_regime`.

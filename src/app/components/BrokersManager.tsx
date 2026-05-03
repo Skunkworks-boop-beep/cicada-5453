@@ -25,9 +25,9 @@ function statusColor(status: string) {
 }
 
 function typeLabel(type: BrokerType) {
-  if (type === 'exness_api') return 'eXness API';
+  if (type === 'exness_api') return 'eXness API (data-only)';
   if (type === 'mt5') return 'MT5';
-  return 'Deriv API';
+  return 'Deriv API (data-only)';
 }
 
 const DERIV_GROUP_ORDER: DerivSyntheticGroup[] = [

@@ -173,3 +173,6 @@ class StorageService:
         self.execution_log = JsonFileStore(base_dir / "execution_log.json", default_factory=list)
         self.app_state = JsonFileStore(base_dir / "app_state.json", default_factory=dict)
         self.settings = JsonFileStore(base_dir / "settings.json", default_factory=dict)
+        # Lazy import to avoid circular dependency at module load.
+        from .order_records import OrderRecordStore
+        self.orders = OrderRecordStore(base_dir / "orders.sqlite")
