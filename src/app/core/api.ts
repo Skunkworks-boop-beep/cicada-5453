@@ -483,6 +483,24 @@ export async function postJobCancel(
   }
 }
 
+/** Fetch one job record by id. Returns null on network failure or 404 so
+ *  callers can treat "no record" and "request failed" identically. The
+ *  server endpoint is ``GET /jobs/{job_id}`` (cicada_nn/api.py:455). */
+export async function getJobRecord(
+  jobId: string,
+  options?: { signal?: AbortSignal }
+): Promise<JobRecord | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}`, {
+      signal: options?.signal ?? AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as JobRecord;
+  } catch {
+    return null;
+  }
+}
+
 export async function getComputeInfo(
   options?: { signal?: AbortSignal }
 ): Promise<ComputeInfo | null> {
@@ -1351,6 +1369,79 @@ export async function postResearchGrid(
   } catch (e) {
     if ((e as Error)?.name === 'AbortError') throw e;
     return { error: e instanceof Error ? e.message : 'Research request failed' };
+  }
+}
+
+// ─── Stage 2A: bridge + latency endpoints ───────────────────────────────
+
+export interface BridgeHealth {
+  reachable: boolean;
+  mt5_connected: boolean;
+  account?: string | null;
+  error?: string | null;
+}
+
+/** Probe the MT5 bridge running inside the Windows VM. Never throws. */
+export async function getBridgeHealth(): Promise<BridgeHealth> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/bridge/health`, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json();
+    return {
+      reachable: !!data.reachable,
+      mt5_connected: !!data.mt5_connected,
+      account: data.account ?? null,
+      error: data.error ?? null,
+    };
+  } catch (e) {
+    return { reachable: false, mt5_connected: false, account: null, error: e instanceof Error ? e.message : 'unknown' };
+  }
+}
+
+export interface LatencyStatus {
+  current_rtt_ms: number | null;
+  current_session: string;
+  baseline_p50_ms: number | null;
+  baseline_p95_ms: number | null;
+  baseline_p99_ms: number | null;
+  baseline_sample_count: number;
+  baseline_valid: boolean;
+  anomaly: boolean;
+}
+
+/** Live latency snapshot: current RTT + per-session baseline. Polled by ProcessMonitor. */
+export async function getLatencyStatus(): Promise<LatencyStatus | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/latency/status`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      current_rtt_ms: data.current_rtt_ms ?? null,
+      current_session: String(data.current_session ?? ''),
+      baseline_p50_ms: data.baseline_p50_ms ?? null,
+      baseline_p95_ms: data.baseline_p95_ms ?? null,
+      baseline_p99_ms: data.baseline_p99_ms ?? null,
+      baseline_sample_count: Number(data.baseline_sample_count ?? 0),
+      baseline_valid: !!data.baseline_valid,
+      anomaly: !!data.anomaly,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface LatencyBaseline {
+  session_profile: Record<string, { p50?: number; p95?: number; p99?: number; sample_count: number }>;
+  day_of_week_profile: Record<string, { avg?: number; p95?: number; sample_count: number }>;
+  current_session: string;
+}
+
+export async function getLatencyBaseline(): Promise<LatencyBaseline | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/latency/baseline`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    return (await res.json()) as LatencyBaseline;
+  } catch {
+    return null;
   }
 }
 

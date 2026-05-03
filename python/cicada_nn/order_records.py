@@ -58,6 +58,12 @@ class OrderRow:
     ticket: int | None
     data_source: str
     ts: float
+    # ── Stage 2A: per-order latency capture (spec lines 1284-1289). NULL for
+    # rows written before the migration; readers must handle None.
+    execution_delta_ms: float | None = None
+    latency_baseline_ms: float | None = None
+    latency_anomaly: bool | None = None
+    expected_slippage_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -90,9 +96,23 @@ CREATE TABLE IF NOT EXISTS orders (
     reason        TEXT,
     ticket        INTEGER,
     data_source   TEXT NOT NULL DEFAULT 'live',
-    ts            REAL NOT NULL
+    ts            REAL NOT NULL,
+    -- Stage 2A: per-order latency capture (spec lines 1284-1289).
+    execution_delta_ms    REAL,
+    latency_baseline_ms   REAL,
+    latency_anomaly       INTEGER,
+    expected_slippage_ms  REAL
 )
 """
+
+# Stage 2A migration: rows written before the new columns existed need the
+# columns added. SQLite has no `ADD COLUMN IF NOT EXISTS` so we introspect.
+_LATENCY_COLUMNS = (
+    ("execution_delta_ms", "REAL"),
+    ("latency_baseline_ms", "REAL"),
+    ("latency_anomaly", "INTEGER"),
+    ("expected_slippage_ms", "REAL"),
+)
 
 _SL_TP_DDL = """
 CREATE TABLE IF NOT EXISTS sl_tp_events (
@@ -142,6 +162,14 @@ class OrderRecordStore:
             cur.execute(_SL_TP_DDL)
             for ddl in _INDEXES:
                 cur.execute(ddl)
+            # Stage 2A migration: add the latency columns to pre-existing
+            # tables. ``ALTER TABLE`` is the only way to add columns and
+            # SQLite has no IF NOT EXISTS guard, so we check first.
+            cur.execute("PRAGMA table_info(orders)")
+            existing = {row[1] for row in cur.fetchall()}
+            for col_name, col_type in _LATENCY_COLUMNS:
+                if col_name not in existing:
+                    cur.execute(f"ALTER TABLE orders ADD COLUMN {col_name} {col_type}")
 
     # ── Append API ──────────────────────────────────────────────────────────
 
@@ -163,10 +191,19 @@ class OrderRecordStore:
         ticket: Optional[int] = None,
         data_source: str = "live",
         ts: Optional[float] = None,
+        execution_delta_ms: Optional[float] = None,
+        latency_baseline_ms: Optional[float] = None,
+        latency_anomaly: Optional[bool] = None,
+        expected_slippage_ms: Optional[float] = None,
     ) -> int:
         """Append an order row. Returns the new row id.
 
         NOTE: NEVER use UPDATE on this table. Status transitions are new rows.
+
+        Stage 2A: ``execution_delta_ms`` / ``latency_baseline_ms`` /
+        ``latency_anomaly`` / ``expected_slippage_ms`` are optional latency
+        capture fields written by the order pipeline at fill-time per spec
+        lines 1438-1454.
         """
         ts_val = float(ts if ts is not None else time.time())
         status_val = status.value if isinstance(status, OrderStatus) else str(status)
@@ -175,8 +212,9 @@ class OrderRecordStore:
             cur.execute(
                 "INSERT INTO orders (bot_id, instrument_id, instrument_symbol, style, "
                 "side, size, entry_price, stop_loss, take_profit, confidence, "
-                "status, reason, ticket, data_source, ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "status, reason, ticket, data_source, ts, "
+                "execution_delta_ms, latency_baseline_ms, latency_anomaly, expected_slippage_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     bot_id,
                     instrument_id,
@@ -193,6 +231,10 @@ class OrderRecordStore:
                     int(ticket) if ticket is not None else None,
                     data_source,
                     ts_val,
+                    float(execution_delta_ms) if execution_delta_ms is not None else None,
+                    float(latency_baseline_ms) if latency_baseline_ms is not None else None,
+                    (int(bool(latency_anomaly)) if latency_anomaly is not None else None),
+                    float(expected_slippage_ms) if expected_slippage_ms is not None else None,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -308,6 +350,13 @@ class OrderRecordStore:
 
 
 def _row_to_order(r: sqlite3.Row) -> OrderRow:
+    # PRAGMA table_info-based migration leaves new columns NULL on legacy
+    # rows; the dataclass defaults to None for those.
+    keys = r.keys()
+
+    def _get(name: str) -> Any:
+        return r[name] if name in keys else None
+
     return OrderRow(
         id=int(r["id"]),
         bot_id=str(r["bot_id"]),
@@ -325,6 +374,18 @@ def _row_to_order(r: sqlite3.Row) -> OrderRow:
         ticket=(int(r["ticket"]) if r["ticket"] is not None else None),
         data_source=str(r["data_source"]),
         ts=float(r["ts"]),
+        execution_delta_ms=(
+            float(_get("execution_delta_ms")) if _get("execution_delta_ms") is not None else None
+        ),
+        latency_baseline_ms=(
+            float(_get("latency_baseline_ms")) if _get("latency_baseline_ms") is not None else None
+        ),
+        latency_anomaly=(
+            bool(_get("latency_anomaly")) if _get("latency_anomaly") is not None else None
+        ),
+        expected_slippage_ms=(
+            float(_get("expected_slippage_ms")) if _get("expected_slippage_ms") is not None else None
+        ),
     )
 
 

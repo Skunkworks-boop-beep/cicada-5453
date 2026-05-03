@@ -152,6 +152,33 @@ class RejectReason(str, Enum):
     MAX_CONCURRENT_EXCEEDED = "max_concurrent_exceeded"
     MIN_HOLD_NOT_ELAPSED = "min_hold_not_elapsed"
     INVALID_SIGNAL = "invalid_signal"
+    # Stage 2A: latency-aware gates per spec lines 1418-1431.
+    BASELINE_NOT_ESTABLISHED = "baseline_not_established"
+    RTT_STALE = "rtt_stale"
+    LATENCY_ELEVATED = "latency_elevated"
+    LATENCY_ANOMALY = "latency_anomaly"
+    LATENCY_SEVERE = "latency_severe"
+    LATENCY_EXTREME = "latency_extreme"
+    UNKNOWN_LATENCY_REASON = "unknown_latency_reason"
+
+
+# Map the string reasons returned by ``LatencyModel.get_trade_gate`` to typed
+# ``RejectReason`` values. Kept here (rather than in latency_model) so the
+# validation contract has a single source of truth.
+_LATENCY_REASON_MAP: dict[str, RejectReason] = {
+    "OK": RejectReason.OK,
+    "BASELINE_NOT_ESTABLISHED": RejectReason.BASELINE_NOT_ESTABLISHED,
+    "RTT_STALE": RejectReason.RTT_STALE,
+    "LATENCY_ELEVATED": RejectReason.LATENCY_ELEVATED,
+    "LATENCY_ANOMALY": RejectReason.LATENCY_ANOMALY,
+    "LATENCY_SEVERE": RejectReason.LATENCY_SEVERE,
+    "LATENCY_EXTREME": RejectReason.LATENCY_EXTREME,
+}
+
+
+def latency_reason_to_reject(reason: str) -> RejectReason:
+    """Translate a ``TradeGate.reason`` string to a ``RejectReason``."""
+    return _LATENCY_REASON_MAP.get(reason, RejectReason.UNKNOWN_LATENCY_REASON)
 
 
 @dataclass(frozen=True)
@@ -190,6 +217,11 @@ def validate_order(
     atr: float,
     n_concurrent: int,
     bars_since_last_open: int | None = None,
+    *,
+    latency_baseline_valid: bool | None = None,
+    latency_gate_allowed: bool | None = None,
+    latency_gate_reason: str | None = None,
+    latency_gate_detail: str | None = None,
 ) -> ValidationResult:
     """Validate an order against per-mode rules.
 
@@ -200,9 +232,21 @@ def validate_order(
     :param signal: The order intent.
     :param atr: Current ATR (in price units, same as entry/stop/TP).
     :param n_concurrent: How many positions this bot already has open in this
-        mode. Caller (the daemon) enforces this against ``max_concurrent``.
-    :param bars_since_last_open: Bars elapsed since the last entry on this bot.
-        ``None`` skips the gate (e.g., fresh bot with no prior position).
+        mode. Caller enforces this against ``max_concurrent``.
+    :param bars_since_last_open: Bars elapsed since the last entry on this
+        bot. ``None`` skips the gate (e.g., fresh bot with no prior position).
+    :param latency_baseline_valid: Result of
+        ``latency_model.is_baseline_valid()`` — spec check #6. ``None``
+        skips (used in unit tests not exercising live latency).
+    :param latency_gate_allowed: Result of
+        ``latency_model.get_trade_gate(mode).allowed`` — spec check #7.
+        ``None`` skips. When ``False``, ``latency_gate_reason`` provides the
+        typed rejection.
+    :param latency_gate_reason: ``TradeGate.reason`` string from
+        ``latency_model``. Used to map to a ``RejectReason`` when check #7
+        fails.
+    :param latency_gate_detail: Optional human-readable detail (e.g. the
+        gate's ``recommendation`` field) carried into the rejection.
     """
     if signal.entry_price <= 0 or atr <= 0:
         return ValidationResult.reject(
@@ -247,6 +291,21 @@ def validate_order(
         return ValidationResult.reject(
             RejectReason.SL_TOO_WIDE,
             f"{sl_atr_mult:.3f}xATR > {rules.max_sl_atr:.3f}",
+        )
+
+    # ── Stage 2A: latency gates (spec lines 1418-1431). Run AFTER the
+    # mode-shape checks so a tight TP doesn't get masked by a latency
+    # spike — the operator wants the structural reason first.
+    if latency_baseline_valid is False:
+        return ValidationResult.reject(
+            RejectReason.BASELINE_NOT_ESTABLISHED,
+            latency_gate_detail or "latency baseline still warming up",
+        )
+    if latency_gate_allowed is False:
+        reason = latency_reason_to_reject(latency_gate_reason or "")
+        return ValidationResult.reject(
+            reason,
+            latency_gate_detail or (latency_gate_reason or "latency gate blocked"),
         )
 
     return ValidationResult.accept()

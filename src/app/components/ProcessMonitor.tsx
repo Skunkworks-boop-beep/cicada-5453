@@ -4,9 +4,19 @@
  * see queue pressure, throughput, hardware use, progress, and recent failures.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle, Clock3, Cpu, Gauge, Loader2, RefreshCw, Server, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, Clock3, Cpu, Gauge, Loader2, RefreshCw, Server, Wifi, WifiOff, XCircle } from 'lucide-react';
 import { RetroBox } from './RetroBox';
-import { getComputeInfo, getJobs, postJobCancel, type ComputeInfo, type JobRecord } from '../core/api';
+import {
+  getBridgeHealth,
+  getComputeInfo,
+  getJobs,
+  getLatencyStatus,
+  postJobCancel,
+  type BridgeHealth,
+  type ComputeInfo,
+  type JobRecord,
+  type LatencyStatus,
+} from '../core/api';
 
 const POLL_MS = 2_000;
 
@@ -125,13 +135,23 @@ export function ProcessMonitor() {
   const [showFinished, setShowFinished] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(() => new Set());
+  // Stage 2A: bridge + latency strip
+  const [bridge, setBridge] = useState<BridgeHealth | null>(null);
+  const [latency, setLatency] = useState<LatencyStatus | null>(null);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [j, c] = await Promise.all([getJobs(), getComputeInfo()]);
+      const [j, c, b, l] = await Promise.all([
+        getJobs(),
+        getComputeInfo(),
+        getBridgeHealth(),
+        getLatencyStatus(),
+      ]);
       setJobs(j);
       setCompute(c);
+      setBridge(b);
+      setLatency(l);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -216,6 +236,42 @@ export function ProcessMonitor() {
               {showFinished ? '[HIDE DONE]' : '[SHOW DONE]'}
             </button>
           </div>
+        </div>
+
+        {/* Stage 2A: bridge + latency strip — same border/background recipe as LIVE OPS */}
+        <div className="flex flex-wrap items-center gap-2 border border-[#00ff00]/30 bg-[#00ff00]/[0.03] px-2 py-1.5">
+          <div className={`flex items-center gap-1.5 ${
+            bridge?.reachable ? 'text-[#00ff00]' : 'text-[#ff6600]'
+          }`}>
+            {bridge?.reachable ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+            <span className="tracking-[0.18em]">MT5 BRIDGE</span>
+          </div>
+          <div className="h-3 border-l border-[#00ff00]/25" />
+          <span className={bridge?.reachable
+            ? (bridge.mt5_connected ? 'text-[#00ff00]' : 'text-[#ff6600]')
+            : 'text-[#ff6600]'}>
+            {bridge == null
+              ? '— probing'
+              : !bridge.reachable
+                ? '[ UNREACHABLE ]'
+                : bridge.mt5_connected
+                  ? `[ OK · ${bridge.account ?? '—'} ]`
+                  : '[ MT5 OFFLINE INSIDE VM ]'}
+          </span>
+          <div className="h-3 border-l border-[#00ff00]/25" />
+          <span className="text-[#00ff00]/45">rtt</span>
+          <span className={latency?.anomaly ? 'text-[#ff6600]' : 'text-[#00ff00]'}>
+            {latency?.current_rtt_ms != null ? `${latency.current_rtt_ms.toFixed(1)}ms` : '—'}
+          </span>
+          <span className="text-[#00ff00]/45">p95</span>
+          <span>{latency?.baseline_p95_ms != null ? `${latency.baseline_p95_ms.toFixed(1)}ms` : '— estimating'}</span>
+          <span className="text-[#00ff00]/45">session</span>
+          <span>{latency?.current_session ?? '—'}</span>
+          <span className="text-[#00ff00]/45">samples</span>
+          <span>{latency?.baseline_sample_count ?? 0}</span>
+          {latency?.anomaly ? (
+            <span className="ml-auto text-[#ff6600] tracking-[0.18em]">[ ANOMALY ]</span>
+          ) : null}
         </div>
 
         {compute ? (

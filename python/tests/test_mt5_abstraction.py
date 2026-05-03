@@ -26,12 +26,16 @@ def _imports_mt5(path: Path) -> bool:
     return False
 
 
-def test_metatrader5_import_only_in_mt5_client():
+def test_metatrader5_not_imported_anywhere_in_cicada_nn():
+    """Stage 2A: the only file in the entire repo allowed to ``import
+    MetaTrader5`` is ``bridge/server.py`` (which lives outside ``cicada_nn``
+    and runs inside the Windows VM). The Ubuntu trading code routes every
+    MT5 call through ``mt5_bridge.py`` over HTTP."""
     importers: list[str] = []
     for path in PKG.rglob("*.py"):
         if _imports_mt5(path):
             importers.append(path.relative_to(PKG).as_posix())
-    assert importers == ["mt5_client.py"], (
-        "MetaTrader5 must only be imported from mt5_client.py — "
-        f"found in: {importers}"
+    assert importers == [], (
+        "No file under cicada_nn may import MetaTrader5 — that import lives "
+        f"only in bridge/server.py. Found in: {importers}"
     )

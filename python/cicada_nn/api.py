@@ -50,8 +50,10 @@ from pydantic import BaseModel
 
 from .model import InstrumentBotNN, NUM_REGIMES, NUM_TIMEFRAMES
 from .train import backtest_rows_to_features, instrument_type_to_idx, train
-from . import mt5_client
+from . import mt5_bridge, mt5_client
 from .backtest_server import run_backtest as run_server_backtest, run_backtest_stream as run_server_backtest_stream, MIN_BARS_REQUIRED_BACKTEST
+from .latency_model import LatencyModel
+from .latency_monitor import LatencyLogStore, LatencyMonitor
 from .grid_config import (
     DEFAULT_PARAM_COMBOS_LIMIT,
     DEFAULT_RESEARCH_PARAM_TUNE_MAX_RISK,
@@ -131,6 +133,13 @@ def _bootstrap_daemon():
         from .daemon_runtime import set_order_store
         set_order_store(STORAGE.orders)
         launched = hydrate_and_launch_from_storage(STORAGE)
+        # Stage 2A: start the bridge-RTT monitor. The daemon thread polls
+        # localhost:5000/health every 30s and writes latency_log rows that
+        # the per-mode trade gate reads on every order.
+        try:
+            LATENCY_MONITOR.start()
+        except Exception:
+            logger.exception("latency_monitor failed to start; trade gates will reject as BASELINE_NOT_ESTABLISHED until samples accumulate")
         EVENT_BUS.publish("daemon", kind="boot", launched=launched, stale_shadow_cleared=cleared)
     except Exception:
         logger.exception("daemon bootstrap failed; bots will not auto-trade until /daemon/deploy is called")
@@ -158,6 +167,10 @@ def _shutdown_daemon_hook():
         shutdown_daemon()
     except Exception:
         logger.exception("daemon shutdown error")
+    try:
+        LATENCY_MONITOR.stop()
+    except Exception:
+        logger.exception("latency_monitor stop error")
 
 
 # ── Daemon control surface ────────────────────────────────────────────────
@@ -496,6 +509,21 @@ CHECKPOINT_DIR = Path(os.environ.get("CICADA_NN_CHECKPOINTS", "checkpoints"))
 STORAGE = StorageService(CHECKPOINT_DIR)
 SHADOW_REGISTRY = ShadowRegistry(CHECKPOINT_DIR)
 
+# ── Stage 2A: latency monitor wiring ─────────────────────────────────────
+# Shares the orders.sqlite file with OrderRecordStore so the spec's "single
+# trading.db" footprint is preserved. SQLite WAL handles the two
+# connections. Monitor starts in _bootstrap_daemon below.
+LATENCY_STORE = LatencyLogStore(CHECKPOINT_DIR / "orders.sqlite")
+LATENCY_MODEL = LatencyModel(LATENCY_STORE)
+LATENCY_MONITOR = LatencyMonitor(
+    store=LATENCY_STORE,
+    p95_lookup=lambda session: (
+        LATENCY_MODEL.get_baseline(session).p95
+        if LATENCY_MODEL.get_baseline(session) is not None
+        else None
+    ),
+)
+
 # Background-job executor for shadow training. Bounded so a flood of
 # retrain requests can't exhaust the machine.
 _DEFAULT_SHADOW_WORKERS = max(1, int(os.environ.get("CICADA_SHADOW_WORKERS", "2")))
@@ -689,6 +717,61 @@ def health():
         "device": str(DEVICE),
         "cuda_available": torch.cuda.is_available(),
         "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+    }
+
+
+# ── Stage 2A: bridge + latency endpoints ─────────────────────────────────
+
+
+@app.get("/bridge/health")
+def bridge_health():
+    """Proxy to the MT5 bridge's GET /health (spec lines 1137-1139).
+
+    Returns ``{reachable, mt5_connected, account, error}`` so the dashboard
+    can show one of three states: BRIDGE OK, BRIDGE UNREACHABLE, or MT5
+    DISCONNECTED INSIDE VM. Never raises — UI consumes the failure shape."""
+    try:
+        h = mt5_bridge.get_bridge().health_check()
+        return {
+            "reachable": True,
+            "mt5_connected": bool(h.get("mt5_connected")),
+            "account": h.get("account"),
+            "error": None,
+        }
+    except mt5_bridge.BridgeUnreachableError as e:
+        return {"reachable": False, "mt5_connected": False, "account": None, "error": str(e)}
+    except mt5_bridge.BridgeError as e:
+        return {"reachable": True, "mt5_connected": False, "account": None, "error": str(e)}
+
+
+@app.get("/latency/status")
+def latency_status():
+    """Current RTT + baseline + anomaly state for the dashboard's strip.
+
+    All fields nullable: when the monitor has not yet produced enough
+    samples ``baseline_p95`` is null, and the UI shows ``— estimating``."""
+    rtt = LATENCY_MODEL.get_current_rtt()
+    session = LATENCY_MODEL.market_session_now()
+    baseline = LATENCY_MODEL.get_baseline(session)
+    return {
+        "current_rtt_ms": rtt,
+        "current_session": session,
+        "baseline_p50_ms": baseline.p50 if baseline else None,
+        "baseline_p95_ms": baseline.p95 if baseline else None,
+        "baseline_p99_ms": baseline.p99 if baseline else None,
+        "baseline_sample_count": baseline.sample_count if baseline else 0,
+        "baseline_valid": baseline is not None,
+        "anomaly": LATENCY_MODEL.is_anomalous(),
+    }
+
+
+@app.get("/latency/baseline")
+def latency_baseline():
+    """Per-session and per-day-of-week profiles. Used for inspection panels."""
+    return {
+        "session_profile": LATENCY_MODEL.session_profile(),
+        "day_of_week_profile": LATENCY_MODEL.day_of_week_profile(),
+        "current_session": LATENCY_MODEL.market_session_now(),
     }
 
 

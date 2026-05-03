@@ -3,7 +3,7 @@
  * Execution is routed per instrument via instrument.brokerId.
  */
 
-import { useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useTradingStore } from '../store/TradingStore';
 import type { BrokerConfig, BrokerType } from '../core/types';
 import { BROKER_DERIV_ID, BROKER_EXNESS_ID, BROKER_EXNESS_API_ID } from '../core/registries';
@@ -14,7 +14,8 @@ import {
   type DerivSyntheticGroup,
   type DerivSyntheticValidation,
 } from '../core/derivApi';
-import { Server, Plus, Settings2, Loader2, RefreshCw } from 'lucide-react';
+import { getBridgeHealth, type BridgeHealth } from '../core/api';
+import { Server, Plus, Settings2, Loader2, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 function statusColor(status: string) {
   switch (status) {
     case 'connected': return 'text-[#00ff00]';
@@ -43,6 +44,18 @@ export function BrokersManager() {
   const [derivApiResult, setDerivApiResult] = useState<Awaited<ReturnType<typeof getActiveSyntheticSymbols>> | null>(null);
   const [derivValidationLoading, setDerivValidationLoading] = useState(false);
   const [derivValidationError, setDerivValidationError] = useState<string | null>(null);
+  // Stage 2A: bridge health pill (polled, no global store coupling)
+  const [bridge, setBridge] = useState<BridgeHealth | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const h = await getBridgeHealth();
+      if (!cancelled) setBridge(h);
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 5_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   /** Validation is derived from current instruments + last API result so it updates when instruments change (e.g. after Add all). */
   const derivValidation = useMemo((): DerivSyntheticValidation | null => {
@@ -170,6 +183,35 @@ export function BrokersManager() {
         <div className="absolute bottom-0 right-0 w-3 h-3 border-r-2 border-b-2 border-[#00ff00]" />
 
         <div className="space-y-3">
+          {/* Stage 2A: MT5 BRIDGE pill — first row, same visual recipe as broker rows */}
+          <div className="border border-[#00ff00]/40 bg-black/50 p-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-3">
+              <span className={`flex items-center gap-1.5 font-medium text-xs ${
+                bridge?.reachable ? 'text-[#00ff00]' : 'text-[#ff6600]'
+              }`}>
+                {bridge?.reachable ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+                MT5 BRIDGE
+              </span>
+              <span className="text-[10px] text-[#ff6600]">(localhost:5000 → Windows VM)</span>
+              <span className={`text-[10px] ${
+                bridge == null ? 'text-[#00ff00]/60'
+                  : !bridge.reachable ? 'text-[#ff4444]'
+                    : bridge.mt5_connected ? 'text-[#00ff00]'
+                      : 'text-[#ff6600]'
+              }`}>
+                {bridge == null
+                  ? 'PROBING...'
+                  : !bridge.reachable
+                    ? 'BRIDGE UNREACHABLE'
+                    : bridge.mt5_connected
+                      ? `BRIDGE OK · ${bridge.account ?? '—'}`
+                      : 'MT5 OFFLINE INSIDE VM'}
+              </span>
+            </div>
+            {bridge?.error ? (
+              <span className="text-[10px] text-[#ff4444]/80 truncate max-w-[40%]">{bridge.error}</span>
+            ) : null}
+          </div>
           {brokers.map((b) => (
             <div
               key={b.id}
