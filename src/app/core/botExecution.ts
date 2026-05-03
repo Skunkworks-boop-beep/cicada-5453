@@ -1314,6 +1314,16 @@ export async function runPositionEvaluation(params: PositionEvalParams): Promise
     const currentPrice = bars[bars.length - 1]?.close ?? 0;
     if (currentPrice <= 0) continue;
 
+    if (inst.brokerId === 'broker-deriv') {
+      emitEvent(onEvent, bot.id, symbol, 'close', 'skip', 'Deriv fixed-duration contract: waiting for expiry', {
+        positionId: pos.id,
+        reason: 'deriv_fixed_duration_no_early_close',
+        action,
+        scope: posScope,
+      }, cycleId);
+      continue;
+    }
+
     const closeRes = await closeBrokerPosition({
       positionId: pos.id,
       instrumentId: pos.instrumentId,

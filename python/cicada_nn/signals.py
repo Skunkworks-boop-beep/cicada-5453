@@ -2993,22 +2993,44 @@ def _signal_parabolic(bars: list[dict], i: int, params: dict[str, float] | None)
 
 
 def _signal_ichimoku_cloud(bars: list[dict], i: int, params: dict[str, float] | None) -> int:
-    """Ichimoku Cloud: Tenkan/Kijun cross above cloud = long, below cloud = short. Dedicated."""
+    """Ichimoku Cloud: TK cross outside kumo, or kumo breakout with TK aligned (mirrors frontend)."""
     if i < 52:
         return 0
     tenkan, kijun, senkou_a, senkou_b = _ichimoku(bars)[:4]
     t, k = tenkan[i], kijun[i]
     sa, sb = senkou_a[i], senkou_b[i]
     t_prev, k_prev = tenkan[i - 1], kijun[i - 1]
-    if t is None or k is None or sa is None or sb is None or t_prev is None or k_prev is None:
+    sa_prev, sb_prev = senkou_a[i - 1], senkou_b[i - 1]
+    if (
+        t is None
+        or k is None
+        or sa is None
+        or sb is None
+        or t_prev is None
+        or k_prev is None
+        or sa_prev is None
+        or sb_prev is None
+    ):
         return 0
     cloud_top = max(sa, sb)
     cloud_bot = min(sa, sb)
+    cloud_top_prev = max(sa_prev, sb_prev)
+    cloud_bot_prev = min(sa_prev, sb_prev)
     price = bars[i]["close"]
+    price_prev = bars[i - 1]["close"]
+
+    # Classic: TK cross in the direction of the cloud
     if t_prev <= k_prev and t > k and price > cloud_top:
         return 1
     if t_prev >= k_prev and t < k and price < cloud_bot:
         return -1
+
+    # Kumo breakout + TK stack (price was at/inside cloud last bar)
+    if t > k and price > cloud_top and price_prev <= cloud_top_prev:
+        return 1
+    if t < k and price < cloud_bot and price_prev >= cloud_bot_prev:
+        return -1
+
     return 0
 
 

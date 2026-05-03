@@ -497,6 +497,22 @@ export async function getComputeInfo(
   }
 }
 
+export async function getJobRecord(
+  jobId: string,
+  options?: { signal?: AbortSignal }
+): Promise<JobRecord | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}`, {
+      signal: options?.signal ?? AbortSignal.timeout(15_000),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    return (await res.json()) as JobRecord;
+  } catch {
+    return null;
+  }
+}
+
 // ── Shadow training (live learning + hot-swap) ───────────────────────────
 
 export interface ShadowTrainRequestPayload {
@@ -1238,6 +1254,9 @@ export async function postResearchGridStream(
           const chunk = JSON.parse(line) as { type?: string; message?: string; phase?: string; instrumentId?: string; strategyId?: string; regime?: string; regimeTunes?: RegimeTune[]; paramTunes?: ParamTune[]; baselineResults?: Array<{ instrumentId: string; instrumentSymbol: string; regimeDistribution: Record<string, number>; baselineAvgSharpe: number; baselineTotalProfit: number }>; skippedInstruments?: Array<{ instrumentId: string; instrumentSymbol?: string; reason: string; barCount?: number; minRequired?: number; detail?: string }> };
           if (chunk.type === 'done') {
             result = { regimeTunes: chunk.regimeTunes ?? [], paramTunes: chunk.paramTunes ?? [], baselineResults: chunk.baselineResults ?? [], skippedInstruments: chunk.skippedInstruments ?? [] };
+          } else if (chunk.type === 'job') {
+            const jobId = (chunk as { job_id?: string }).job_id;
+            if (jobId) onProgress({ type: 'job', job_id: jobId } as { type: 'job'; job_id: string });
           } else if (chunk.type === 'progress') {
             onProgress(chunk);
           }

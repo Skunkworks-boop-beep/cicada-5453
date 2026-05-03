@@ -1434,7 +1434,7 @@ def run_grid_research_with_progress(
                     "instrumentId": inst_id,
                     "strategyId": strategy_id,
                     "regime": regime,
-                    "message": f"Tuning {symbol} {tf} × {strategy_id} × {regime} ({done_param}/{total_param_jobs})",
+                    "message": f"Tuning {symbol} {tf} × {name} [{strategy_id}] × {regime} ({done_param}/{total_param_jobs})",
                     "currentPhase": "param",
                     "currentInstrument": symbol,
                     "currentStrategy": strategy_id,

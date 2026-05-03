@@ -184,6 +184,27 @@ def daemon_predict(
 
         ckpt = torch.load(det_path, map_location="cpu", weights_only=True)
         meta = ckpt.get("meta", {})
+        # ── Aggressive safety gate (kill switch) ────────────────────────────
+        # Operator confirmed: this aggressive NEUTRAL gate is the configuration
+        # that produced the +$348 / 42-wins demo run. Softening it to "halve
+        # size + tighten stop" added losing trades. Models below the val_acc
+        # floor return NEUTRAL — the daemon never opens a position on their
+        # raw signal. Strategy-signal fallbacks and the ensemble-confirmed
+        # path can still fire when they agree independently.
+        if meta.get("safe_to_use") is False:
+            logger.warning(
+                "daemon predict refused: bot=%s val_acc=%s below promotion floor",
+                cfg.bot_id, meta.get("val_accuracy"),
+            )
+            return {
+                "action": 2,
+                "confidence": 0.0,
+                "sl_pct": cfg.risk_params.default_stop_loss_pct,
+                "tp_r": cfg.risk_params.default_risk_reward_ratio,
+                "size_multiplier": 1.0,
+                "safe_to_use": False,
+                "warning": "model unsafe (val_acc below floor)",
+            }
         bar_window = int(meta.get("bar_window", cfg.nn_detection_bar_window or 60))
         feat_cfg = BarFeatureConfig(window=bar_window, include_context=True)
         feat = window_features(bars, len(bars) - 1, feat_cfg)
@@ -205,6 +226,8 @@ def daemon_predict(
             "confidence": conf,
             "sl_pct": float(0.01 + 0.04 * raw[1]),
             "tp_r": float(1.0 + 2.0 * raw[2]),
+            "size_multiplier": float(0.5 + 1.5 * raw[0]),
+            "safe_to_use": True,
         }
 
     # Tabular fallback when no detection checkpoint exists yet.

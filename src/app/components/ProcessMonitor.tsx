@@ -6,9 +6,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle, Clock3, Cpu, Gauge, Loader2, RefreshCw, Server, XCircle } from 'lucide-react';
 import { RetroBox } from './RetroBox';
-import { getComputeInfo, getJobs, postJobCancel, type ComputeInfo, type JobRecord } from '../core/api';
+import { getNnApiBaseUrl } from '../core/config';
+import { postJobCancel, type ComputeInfo, type JobRecord } from '../core/api';
 
 const POLL_MS = 2_000;
+/** Research/backtests can block the same worker; short timeouts returned empty and wiped the UI. */
+const POLL_TIMEOUT_MS = 30_000;
 
 const STATUS_STYLE: Record<JobRecord['status'], { label: string; dot: string; text: string; border: string; bg: string }> = {
   queued: {
@@ -125,16 +128,71 @@ export function ProcessMonitor() {
   const [showFinished, setShowFinished] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(() => new Set());
+  /** Set when a poll fails or times out; previous jobs/compute are kept. */
+  const [pollError, setPollError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
+    const base = getNnApiBaseUrl();
+    const signal = AbortSignal.timeout(POLL_TIMEOUT_MS);
+    let okJobs = false;
+    let okCompute = false;
+    let failReason: string | null = null;
     try {
-      const [j, c] = await Promise.all([getJobs(), getComputeInfo()]);
-      setJobs(j);
-      setCompute(c);
-      setError(null);
+      const [jr, cr] = await Promise.allSettled([
+        fetch(`${base}/jobs`, { signal }),
+        fetch(`${base}/compute`, { signal }),
+      ]);
+
+      if (jr.status === 'fulfilled' && jr.value.ok) {
+        try {
+          const data = (await jr.value.json()) as { jobs?: JobRecord[] };
+          if (Array.isArray(data.jobs)) {
+            setJobs(data.jobs);
+            okJobs = true;
+          } else {
+            failReason = 'invalid jobs response';
+          }
+        } catch {
+          failReason = 'could not read jobs';
+        }
+      } else if (jr.status === 'rejected') {
+        failReason = jr.reason instanceof Error ? jr.reason.message : String(jr.reason);
+      } else {
+        const st = jr.status === 'fulfilled' ? jr.value.status : '?';
+        failReason = `jobs HTTP ${st}`;
+      }
+
+      if (cr.status === 'fulfilled' && cr.value.ok) {
+        try {
+          setCompute((await cr.value.json()) as ComputeInfo);
+          okCompute = true;
+        } catch {
+          if (!failReason) {
+            failReason = 'could not read compute';
+          }
+        }
+      } else if (cr.status === 'rejected') {
+        if (!failReason) {
+          failReason = cr.reason instanceof Error ? cr.reason.message : String(cr.reason);
+        }
+      } else if (!failReason) {
+        const st = cr.status === 'fulfilled' ? cr.value.status : '?';
+        failReason = `compute HTTP ${st}`;
+      }
+
+      if (okJobs && okCompute) {
+        setPollError(null);
+        setError(null);
+      } else {
+        setPollError(
+          failReason
+            ? `Refresh incomplete (${failReason}) — last snapshot below${!okCompute ? ' · compute may be stale' : ''}${!okJobs ? ' · job list may be stale' : ''}`
+            : 'Refresh incomplete — last snapshot below'
+        );
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setPollError(e instanceof Error ? e.message : String(e));
     } finally {
       setRefreshing(false);
     }
@@ -174,7 +232,10 @@ export function ProcessMonitor() {
       failed: 0,
       cancelled: 0,
     } satisfies Record<JobRecord['status'], number>;
-    for (const job of jobs) next[job.status] += 1;
+    for (const job of jobs) {
+      const s = job.status;
+      if (s in next) next[s] += 1;
+    }
     return next;
   }, [jobs]);
 
@@ -183,7 +244,7 @@ export function ProcessMonitor() {
 
   return (
     <RetroBox title="PROCESS MONITOR">
-      <div className="font-mono text-[10px] text-[#00ff00]/80 space-y-2.5">
+      <div className="h-96 min-h-0 font-mono text-[10px] text-[#00ff00]/80 space-y-2.5 overflow-y-auto overflow-x-hidden pr-1.5 scrollbar-visible">
         <div className="flex flex-wrap items-center gap-2 border border-[#00ff00]/30 bg-[#00ff00]/[0.03] px-2 py-1.5">
           <div className="flex items-center gap-1.5 text-[#00ff00]">
             <Activity className="h-3.5 w-3.5" />
@@ -268,6 +329,13 @@ export function ProcessMonitor() {
         ) : (
           <div className="border border-[#ffaa00]/40 bg-[#ffaa00]/[0.04] px-2 py-1.5 text-[#ffaa00]/80">
             Compute profile unavailable. Waiting for backend...
+          </div>
+        )}
+
+        {pollError && (
+          <div className="flex items-start gap-2 border border-[#ffaa00]/50 bg-[#ffaa00]/[0.06] px-2 py-1.5 text-[#ffaa00]/90">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+            <span>{pollError}</span>
           </div>
         )}
 

@@ -138,5 +138,65 @@
 "outcome": "disconnect",
 "message": "Broker disconnected: broker-deriv (deriv_api)",
 "details": null
+},
+{
+"id": "ev-1776968721685-dh7sgl",
+"timestamp": "2026-04-23T18:25:21.685Z",
+"botId": "",
+"symbol": "broker-deriv",
+"phase": "broker",
+"outcome": "disconnect",
+"message": "Broker disconnected: broker-deriv (deriv_api)",
+"details": null
+},
+{
+"id": "ev-1776993078955-tb6tfe",
+"timestamp": "2026-04-24T01:11:18.955Z",
+"botId": "",
+"symbol": "broker-deriv",
+"phase": "broker",
+"outcome": "disconnect",
+"message": "Broker disconnected: broker-deriv (deriv_api)",
+"details": null
+},
+{
+"id": "ev-1777127538824-bpemqi",
+"timestamp": "2026-04-25T14:32:18.824Z",
+"botId": "",
+"symbol": "broker-deriv",
+"phase": "broker",
+"outcome": "disconnect",
+"message": "Broker disconnected: broker-deriv (deriv_api)",
+"details": null
+},
+{
+"id": "ev-1777173850470-rqtbp6",
+"timestamp": "2026-04-26T03:24:10.470Z",
+"botId": "",
+"symbol": "broker-deriv",
+"phase": "broker",
+"outcome": "disconnect",
+"message": "Broker disconnected: broker-deriv (deriv_api)",
+"details": null
+},
+{
+"id": "ev-1777291183900-p8klj4",
+"timestamp": "2026-04-27T11:59:43.900Z",
+"botId": "",
+"symbol": "broker-deriv",
+"phase": "broker",
+"outcome": "disconnect",
+"message": "Broker disconnected: broker-deriv (deriv_api)",
+"details": null
+},
+{
+"id": "ev-1777299267398-owzrob",
+"timestamp": "2026-04-27T14:14:27.398Z",
+"botId": "",
+"symbol": "broker-deriv",
+"phase": "broker",
+"outcome": "disconnect",
+"message": "Broker disconnected: broker-deriv (deriv_api)",
+"details": null
 }
 ]

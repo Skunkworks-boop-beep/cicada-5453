@@ -52,7 +52,7 @@ export const INDICATOR_STRATEGIES: TradeLogicDef[] = [
   ind('ind-donchian', 'Donchian Channel Breakout', 'Price breaks N-period high/low.', ['breakout', 'trending_bull', 'trending_bear'], S, 'Entry on break of channel.', 'Target opposite side or trail.'),
   ind('ind-supertrend', 'Supertrend', 'ATR-based trend; flip for reversal.', ['trending_bull', 'trending_bear'], S, 'Entry on Supertrend flip.', 'Exit on opposite flip.'),
   ind('ind-parabolic', 'Parabolic SAR', 'Trailing stop; trend reversal on flip.', ['trending_bull', 'trending_bear'], S, 'Entry on SAR flip with structure.', 'Exit on next flip.'),
-  ind('ind-ichimoku-cloud', 'Ichimoku Cloud', 'Cloud, TK cross, Chikou; multi-signal.', ['trending_bull', 'trending_bear', 'ranging'], ['day', 'medium_swing', 'swing', 'sniper'], 'Entry on TK cross above/below cloud.', 'Target Kijun or Chikou resistance.'),
+  ind('ind-ichimoku-cloud', 'Ichimoku Cloud', 'Cloud, TK cross, Chikou; multi-signal.', ['trending_bull', 'trending_bear', 'ranging'], ['day', 'medium_swing', 'swing', 'sniper'], 'TK cross outside kumo or kumo breakout with TK aligned.', 'Target Kijun or Chikou resistance.'),
   ind('ind-ichimoku-chikou', 'Ichimoku Chikou Span', 'Chikou break of price; confirmation.', ['trending_bull', 'trending_bear'], ['day', 'swing'], 'Entry when Chikou breaks price structure.', 'Target Kumo or swing.'),
   ind('ind-pivot-points', 'Pivot Points', 'Classic Pivot R1 R2 S1 S2; support/resistance.', ['ranging', 'breakout'], ['scalping', 'day', 'sniper'], 'Entry at pivot level with confirmation.', 'Target next pivot.'),
   ind('ind-camarilla', 'Camarilla Pivots', 'Tighter pivots; intraday.', ['ranging', 'breakout'], ['scalping', 'day'], 'Entry at Camarilla level.', 'Target next level.'),

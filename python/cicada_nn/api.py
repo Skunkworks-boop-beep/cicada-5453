@@ -392,6 +392,22 @@ def cancel_job(job_id: str):
     return {"cancelled": True, "job_id": job_id}
 
 
+@app.get("/audit/models")
+def audit_models():
+    """Scan every detection-model meta file and report which models are unsafe.
+
+    Returned shape: ``{ total, ok, unsafe, inverted, entries: [...] }``. Each
+    entry carries instrument_id, timeframe, val_accuracy, the verdict
+    (``ok`` / ``below_floor`` / ``inverted`` / ``missing_metric``), and the
+    inversion_score that quantifies how systematically wrong the model is.
+
+    The dashboard polls this every minute so the operator immediately sees
+    the bots that must be retrained before being allowed to trade.
+    """
+    from .model_audit import audit_checkpoints, audit_summary
+    return audit_summary(audit_checkpoints(CHECKPOINT_DIR))
+
+
 @app.get("/compute")
 def compute_info():
     """Report resolved compute config so the UI can show GPU / worker usage."""
@@ -828,13 +844,16 @@ def predict(req: PredictRequest):
                     # Map to response actions: 0=long, 1=short, 2=neutral.
                     action = 1 if pred == 0 else (0 if pred == 1 else 2)
 
-                    # ── Safety floor on per-TF detection model ──────────────
-                    # When the trained model failed to clear the random-baseline
-                    # promotion floor we *do not* let it trade. The action is
-                    # forced to NEUTRAL and ``safe_to_use=False`` is returned so
-                    # the daemon can short-circuit and surface a warning. This
-                    # is the gate that catches the "val_acc=0.7%" failure mode
-                    # the operator hit in production.
+                    # ── Aggressive safety floor (kill switch) ────────────────
+                    # Operator measurement: with this aggressive NEUTRAL gate
+                    # in place, the live bot recorded 42 wins / 0 losses on
+                    # demo R_10 (+$348). Softening to "halve size + tighten
+                    # stop" let unsafe-model entries through and the bot
+                    # turned net-negative. So we force NEUTRAL on any model
+                    # below the val_accuracy floor — the trade only fires
+                    # when *some* path (strategy-only fallback, ensemble
+                    # confirmation) explicitly approves it, never on a
+                    # degenerate model's raw signal alone.
                     safe_flag = bool(meta.get("safe_to_use", True))
                     val_acc = meta.get("val_accuracy")
                     inversion = meta.get("inversion_score")
@@ -1697,6 +1716,7 @@ def backtest_run_stream(req: BacktestRunRequest):
                     prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
                     instrument_types=getattr(req, "instrument_types", None) or None,
                     max_workers=max_workers,
+                    job_id=job.job_id,
                 )
                 if use_parallel
                 else run_server_backtest_stream(
@@ -1746,6 +1766,12 @@ def backtest_run_stream(req: BacktestRunRequest):
                     "total": total,
                     "progress": progress,
                 }) + "\n"
+            if JOB_MANAGER.should_cancel(job.job_id):
+                JOB_MANAGER.mark_done(
+                    job.job_id, succeeded=False, message="cancelled by client"
+                )
+                yield json.dumps({"type": "cancelled", "results": results}) + "\n"
+                return
             JOB_MANAGER.mark_done(job.job_id, succeeded=True, message=f"{len(results)} rows")
             yield json.dumps({"type": "done", "results": results, "status": "completed"}) + "\n"
         except Exception as e:

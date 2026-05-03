@@ -335,7 +335,7 @@ export function BacktestEngine() {
             &gt; STRATEGIES ({enabledStrategies.length} of {strategies.length}) — from Strategy Library
           </div>
           <div className="text-[10px] text-[#00ff0080] mb-1.5">
-            Backtest and build use only strategies enabled in Strategy Library. Configure there.
+            Backtest and research use every strategy below (enabled + has a signal implementation). This is separate from the [GRID] “Param combos” control, which limits how many parameter variants are tried per instrument×strategy×regime — it does not pick which strategies run.
             {selection.hasWarnings && (
               <span className="block mt-1 text-[#ff6600]">
                 {selection.invalidIds.length > 0 && `${selection.invalidIds.length} invalid/removed filtered. `}
@@ -350,10 +350,17 @@ export function BacktestEngine() {
               </div>
             ) : (
               enabledStrategies.map((s) => (
-                <div key={s.id} className="text-[10px] text-[#00ff00]/90">{s.name}</div>
+                <div key={s.id} className="text-[10px] text-[#00ff00]/90">
+                  <span className="text-[#00ff00]/50">{s.id}</span> — {s.name}
+                </div>
               ))
             )}
           </div>
+          {stratIds.length > 0 && (
+            <div className="mt-1.5 text-[9px] text-[#00ff00]/65 font-mono leading-snug">
+              Run will use <span className="text-[#ff6600]">{stratIds.length}</span> strateg{stratIds.length === 1 ? 'y' : 'ies'} (IDs match the list above).
+            </div>
+          )}
         </div>
 
         <div className="mb-4">
@@ -434,7 +441,9 @@ export function BacktestEngine() {
                   variant="green"
                   compact
                 />
-                <span className="text-[#00ff0080] ml-1">Strat:</span>
+                <span className="text-[#00ff0080] ml-1" title="Max parameter combinations per (instrument×strategy×regime). Not the number of library strategies.">
+                  Param combos:
+                </span>
                 <CicadaDropdown
                   options={[
                     { value: 1, label: '1' },
@@ -474,8 +483,8 @@ export function BacktestEngine() {
                 />
               </div>
               <div className="text-[9px] text-[#00ff0080] mt-1">
-                Total jobs = Regime × Strat × Risk. Start small; use High coverage when lower TFs improve but higher TFs get worse.
-                Configs must pass OOS validation — check &quot;need review&quot; after run.
+                Grid sizes apply per scope cell: (Regime calibration breadth) × (param combos per strategy+regime) × (risk grid). A higher “Param combos” value searches more parameter variants for each <em>selected</em> library strategy, not more strategies. Total work also scales with timeframes and regime columns (5 in research, excluding <code>any</code>).
+                Start small; use High coverage when lower TFs improve but higher TFs get worse. Configs must pass OOS validation — check &quot;need review&quot; after run.
               </div>
             </div>
           )}

@@ -1,1 +1,156 @@
-[]
+[
+{
+"id": "bot-inst-deriv-r10-1777230296397",
+"name": "CICADA_R_10",
+"instrumentId": "inst-deriv-r10",
+"instrumentSymbol": "R_10",
+"timeframes": [
+"H4",
+"D1",
+"W1"
+],
+"styles": [
+"scalping",
+"day",
+"medium_swing",
+"swing",
+"sniper"
+],
+"allowedScopes": [
+"scalp",
+"day",
+"swing"
+],
+"scopeMode": "manual",
+"regimes": [
+"trending_bull",
+"trending_bear",
+"ranging",
+"reversal_bull",
+"reversal_bear",
+"unknown"
+],
+"strategyIds": [
+"cp-head-shoulders",
+"cp-wedge-rising"
+],
+"riskLevel": 2,
+"maxPositions": 5,
+"riskParams": {
+"riskPerTradePct": 0.0032500000000000003,
+"maxDrawdownPct": 0.19,
+"useKelly": false,
+"kellyFraction": 0.25,
+"maxCorrelatedExposure": 1.6,
+"defaultStopLossPct": 0.024,
+"defaultRiskRewardRatio": 2.3
+},
+"status": "deployed",
+"buildProgress": 100,
+"nextRebuildAt": "2026-05-04T06:33:27.084Z",
+"nnFeatureVector": [
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0,
+0
+],
+"oosSampleCount": 176,
+"nnDetectionTimeframe": "D1",
+"nnDetectionBarWindow": 100,
+"nnDetectionModels": {
+"D1": {
+"timeframe": "D1",
+"scope": null,
+"barWindow": 100,
+"checkpointPath": "checkpoints/instrument_detection_inst-deriv-r10__D1.pt",
+"valAccuracy": 0.6896551847457886,
+"sampleCount": 176,
+"strategyId": "cp-wedge-rising"
+},
+"H4": {
+"timeframe": "H4",
+"scope": null,
+"barWindow": 90,
+"checkpointPath": "checkpoints/instrument_detection_inst-deriv-r10__H4.pt",
+"valAccuracy": 0.5087719559669495,
+"sampleCount": 1647,
+"strategyId": "cp-head-shoulders"
+},
+"W1": {
+"timeframe": "W1",
+"scope": null,
+"barWindow": 120,
+"checkpointPath": "checkpoints/instrument_detection_inst-deriv-r10__W1.pt",
+"valAccuracy": 0.5714285969734192,
+"sampleCount": 152,
+"strategyId": "cp-wedge-rising"
+}
+},
+"deployedAt": "2026-04-27T13:57:45.005Z",
+"fixedStyles": [
+"medium_swing",
+"swing",
+"sniper"
+]
+}
+]

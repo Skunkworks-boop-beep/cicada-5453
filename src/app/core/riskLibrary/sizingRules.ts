@@ -63,4 +63,14 @@ export const SIZING_RULES: RiskRuleDef[] = [
         ? { allowed: false, reason: 'Swing single risk max 2.5%' }
         : { allowed: true }
   ),
+  rule(
+    'size-position-max-3pct',
+    'Position-scope single max 3%',
+    'Position (long-hold) scope: single position risk max 3% of equity.',
+    ['position'],
+    (ctx) =>
+      ctx.newPositionRiskAmount > ctx.portfolio.equity * 0.03
+        ? { allowed: false, reason: 'Position-scope single risk max 3%' }
+        : { allowed: true }
+  ),
 ];

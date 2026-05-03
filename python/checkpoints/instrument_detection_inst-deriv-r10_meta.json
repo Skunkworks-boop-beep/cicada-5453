@@ -2,14 +2,27 @@
   "instrument_id": "inst-deriv-r10",
   "strategy_id": "cp-double-top",
   "strategy_params": {
-    "lookback": 8.0,
+    "lookback": 144.0,
     "rsiPeriod": 14.0,
     "bbPeriod": 20.0,
     "atrPeriod": 14.0,
-    "donchianPeriod": 15.0
+    "donchianPeriod": 20.0
   },
-  "timeframe": "M15",
-  "bar_window": 60,
-  "bar_feature_dim": 240,
-  "num_samples": 4939
+  "timeframe": "D1",
+  "bar_window": 100,
+  "per_bar_features": 4,
+  "context_features": 4,
+  "bar_feature_dim": 404,
+  "model_version": 3,
+  "horizon_bars": 20,
+  "tp_mult": 2.0,
+  "sl_mult": 1.0,
+  "label_distribution": {
+    "short": 0.75,
+    "long": 0.25,
+    "neutral": 0.0
+  },
+  "val_accuracy": 0.0,
+  "num_train": 176,
+  "num_val": 29
 }

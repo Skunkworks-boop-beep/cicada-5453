@@ -10,25 +10,53 @@ function rule(
   return { id, name, category: 'concentration', scopes, description, check };
 }
 
+/** Largest single-position risk vs sum of all open risks + new trade (first position exempt). */
+function checkMaxSingleShareOfTotalRisk(
+  ctx: RiskRuleContext,
+  maxFraction: number,
+  label: string
+): RiskRuleResult {
+  if (ctx.existingPositions.length === 0) return { allowed: true };
+  const totalRisk =
+    ctx.existingPositions.reduce((s, p) => s + p.riskAmount, 0) + ctx.newPositionRiskAmount;
+  if (totalRisk <= 0) return { allowed: true };
+  const maxSingle = Math.max(
+    ...ctx.existingPositions.map((p) => p.riskAmount),
+    ctx.newPositionRiskAmount
+  );
+  return maxSingle / totalRisk > maxFraction
+    ? { allowed: false, reason: `Single position max ${label} of total risk (${ctx.scope})` }
+    : { allowed: true };
+}
+
 export const CONCENTRATION_RULES: RiskRuleDef[] = [
   rule(
-    'conc-max-single-20pct',
-    'Max single position 20%',
-    'No single position risk may exceed 20% of total open risk (skipped for first position).',
-    [],
-    (ctx) => {
-      if (ctx.existingPositions.length === 0) return { allowed: true };
-      const totalRisk =
-        ctx.existingPositions.reduce((s, p) => s + p.riskAmount, 0) + ctx.newPositionRiskAmount;
-      if (totalRisk <= 0) return { allowed: true };
-      const maxSingle = Math.max(
-        ...ctx.existingPositions.map((p) => p.riskAmount),
-        ctx.newPositionRiskAmount
-      );
-      return maxSingle / totalRisk > 0.2
-        ? { allowed: false, reason: 'Single position max 20% of total risk' }
-        : { allowed: true };
-    }
+    'conc-max-single-scalp',
+    'Scalp max single 15% of total risk',
+    'Scalp: no single position risk may exceed 15% of combined open risk (skipped for first position).',
+    ['scalp'],
+    (ctx) => checkMaxSingleShareOfTotalRisk(ctx, 0.15, '15%')
+  ),
+  rule(
+    'conc-max-single-day',
+    'Day max single 20% of total risk',
+    'Day: no single position risk may exceed 20% of combined open risk (skipped for first position).',
+    ['day'],
+    (ctx) => checkMaxSingleShareOfTotalRisk(ctx, 0.2, '20%')
+  ),
+  rule(
+    'conc-max-single-swing',
+    'Swing max single 25% of total risk',
+    'Swing: no single position risk may exceed 25% of combined open risk (skipped for first position).',
+    ['swing'],
+    (ctx) => checkMaxSingleShareOfTotalRisk(ctx, 0.25, '25%')
+  ),
+  rule(
+    'conc-max-single-position-scope',
+    'Position-scope max single 35% of total risk',
+    'Position (long-hold): no single position risk may exceed 35% of combined open risk (skipped for first position).',
+    ['position'],
+    (ctx) => checkMaxSingleShareOfTotalRisk(ctx, 0.35, '35%')
   ),
   rule(
     'conc-scalp-diversify-3',

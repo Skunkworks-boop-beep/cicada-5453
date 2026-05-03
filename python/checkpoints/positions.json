@@ -1,9 +1,60 @@
 {
 "positions": [],
-"closedTradesByBot": {},
-"balance": 9850.72,
-"peakEquity": 9850.72,
+"closedTradesByBot": {
+"bot-inst-deriv-r10-1777230296397": [
+{
+"id": "pos-deriv-312973263608-1777310094673",
+"botId": "bot-inst-deriv-r10-1777230296397",
+"instrumentId": "inst-deriv-r10",
+"type": "LONG",
+"size": 1,
+"entryPrice": 4903.55,
+"pnl": 6.460000000000001,
+"pnlPercent": 0.0701711698598532,
+"openedAt": "2026-04-27T17:14:53.000Z",
+"closedAt": "2026-04-27T17:15:04.000Z",
+"scope": "swing",
+"contractId": 312973263608,
+"brokerKey": "312973263608",
+"balanceAtEntry": 9206.06
+},
+{
+"id": "pos-deriv-312973345188-1777310170609",
+"botId": "bot-inst-deriv-r10-1777230296397",
+"instrumentId": "inst-deriv-r10",
+"type": "LONG",
+"size": 1,
+"entryPrice": 4903.483,
+"pnl": 6.460000000000001,
+"pnlPercent": 0.07012196445706495,
+"openedAt": "2026-04-27T17:15:54.000Z",
+"closedAt": "2026-04-27T17:16:10.000Z",
+"scope": "swing",
+"contractId": 312973345188,
+"brokerKey": "312973345188",
+"balanceAtEntry": 9212.52
+},
+{
+"id": "pos-deriv-312973425828-1777310214797",
+"botId": "bot-inst-deriv-r10-1777230296397",
+"instrumentId": "inst-deriv-r10",
+"type": "LONG",
+"size": 1,
+"entryPrice": 4904.397,
+"pnl": 6.460000000000001,
+"pnlPercent": 0.07017528613266823,
+"openedAt": "2026-04-27T17:16:53.000Z",
+"closedAt": "2026-04-27T17:17:04.000Z",
+"scope": "swing",
+"contractId": 312973425828,
+"brokerKey": "312973425828",
+"balanceAtEntry": 9205.52
+}
+]
+},
+"balance": 9198.52,
+"peakEquity": 9212.52,
 "totalPnl": 0,
 "totalPnlPercent": 0,
-"realizedPnl": 0
+"realizedPnl": 19.380000000000003
 }

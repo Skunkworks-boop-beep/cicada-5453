@@ -398,13 +398,32 @@ def shadow_train_tabular(
     instrument_types: dict[str, str],
     epochs: int = 30,
     lr: float = 1e-3,
+    closed_trades: list[dict] | None = None,
+    paper_trades: list[dict] | None = None,
 ) -> ShadowJobState:
+    """Shadow-train the tabular bot model.
+
+    ``rows`` are backtest result rows. When ``closed_trades`` and / or
+    ``paper_trades`` are also supplied, they're converted into synthetic
+    backtest rows (via ``closed_trade_learning.merge_training_sources``) so
+    the trainer sees real OOS-labelled samples from the live execution loop
+    on top of the synthetic backtest data. This is what makes the bot
+    actually learn from its own placed trades.
+    """
     import tempfile
+    from .closed_trade_learning import merge_training_sources
+
+    merged_rows = merge_training_sources(
+        backtest_rows=rows,
+        closed_trades_by_bot={instrument_id: closed_trades or []} if closed_trades else None,
+        paper_trades_by_bot={instrument_id: paper_trades or []} if paper_trades else None,
+        instrument_symbol_map=None,
+    )
 
     def _train(tmpdir: Path) -> dict:
         # Train to a temp dir so the live .pt is never touched.
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump(rows, f)
+            json.dump(merged_rows, f)
             path = f.name
         try:
             _, oos = train_tabular(
@@ -439,11 +458,31 @@ def shadow_train_detection(
     rows: list[dict],
     epochs: int = 30,
     lr: float = 1e-3,
+    closed_trades: list[dict] | None = None,
+    paper_trades: list[dict] | None = None,
 ) -> ShadowJobState:
+    """Shadow-train the bar-level detection NN.
+
+    Like ``shadow_train_tabular``, accepts ``closed_trades`` and
+    ``paper_trades`` so the augmented backtest-row list flows into
+    ``train_detection`` together with the bars. The detection model itself
+    learns from bar windows, but the row list is consulted to pick the best
+    strategy and timeframe — feeding live evidence here makes the trainer
+    pick the strategy that actually worked, not just the best in backtest.
+    """
+    from .closed_trade_learning import merge_training_sources
+
+    merged_rows = merge_training_sources(
+        backtest_rows=rows,
+        closed_trades_by_bot={instrument_id: closed_trades or []} if closed_trades else None,
+        paper_trades_by_bot={instrument_id: paper_trades or []} if paper_trades else None,
+        instrument_symbol_map=None,
+    )
+
     def _train(tmpdir: Path) -> dict:
         _, meta = train_detection(
             bars_by_key=bars_by_key,
-            results=rows,
+            results=merged_rows,
             instrument_id=instrument_id,
             output_dir=str(tmpdir),
             epochs=epochs,

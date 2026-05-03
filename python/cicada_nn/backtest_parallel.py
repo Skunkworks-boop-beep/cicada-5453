@@ -27,8 +27,15 @@ from __future__ import annotations
 
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ProcessPoolExecutor,
+    wait,
+)
 from typing import Any, Iterator
+
+from .job_manager import JOB_MANAGER
 
 from .backtest_server import (
     _infer_instrument_type,
@@ -204,6 +211,7 @@ def run_backtest_parallel(
     prefer_htf_regime: bool | None = None,
     instrument_types: dict[str, str] | None = None,
     max_workers: int | None = None,
+    job_id: str | None = None,
 ) -> Iterator[tuple[dict[str, Any], int, int]]:
     """Run all backtest jobs in parallel and yield (row, completed, total).
 
@@ -239,6 +247,8 @@ def run_backtest_parallel(
     if total <= max(4, workers):
         completed = 0
         for job in jobs:
+            if job_id and JOB_MANAGER.should_cancel(job_id):
+                return
             res = _job_worker(job)
             completed += 1
             if res.get("ok"):
@@ -253,16 +263,38 @@ def run_backtest_parallel(
     if context is not None:
         import multiprocessing as mp
         executor_kwargs["mp_context"] = mp.get_context(context)
-    with ProcessPoolExecutor(**executor_kwargs) as pool:
-        futures = {pool.submit(_job_worker, job): job for job in jobs}
+    pool: ProcessPoolExecutor | None = None
+    pool_cancelled = False
+    try:
+        pool = ProcessPoolExecutor(**executor_kwargs)
+        future_to_job = {pool.submit(_job_worker, job): job for job in jobs}
+        pending: set[Future] = set(future_to_job.keys())
         completed = 0
-        for fut in as_completed(futures):
-            completed += 1
-            res = fut.result()
-            if res.get("ok"):
-                yield res["row"], completed, total
-            else:
-                yield _failed_row_from_job(futures[fut], res.get("error", "unknown")), completed, total
+        while pending:
+            if job_id and JOB_MANAGER.should_cancel(job_id):
+                pool_cancelled = True
+                pool.shutdown(wait=False, cancel_futures=True)
+                return
+            done, not_done = wait(
+                pending, return_when=FIRST_COMPLETED, timeout=0.25
+            )
+            for fut in done:
+                completed += 1
+                res = fut.result()
+                job = future_to_job[fut]
+                if res.get("ok"):
+                    yield res["row"], completed, total
+                else:
+                    yield _failed_row_from_job(
+                        job, res.get("error", "unknown")
+                    ), completed, total
+            pending = not_done
+    finally:
+        if pool is not None and not pool_cancelled:
+            try:
+                pool.shutdown(wait=True)
+            except Exception:
+                pass
 
 
 def _failed_row_from_job(job: dict, error: str) -> dict[str, Any]:

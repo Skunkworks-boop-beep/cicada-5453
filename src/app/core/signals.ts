@@ -1026,18 +1026,44 @@ export const signalParabolic: SignalFn = (bars, _, i, params) => {
   return 0;
 };
 
-/** Ichimoku Cloud: Tenkan/Kijun cross above cloud = long, below cloud = short. */
+/** Ichimoku Cloud: TK cross outside kumo, or kumo breakout with TK aligned (mirrors python/cicada_nn/signals.py). */
 export const signalIchimokuCloud: SignalFn = (bars, _, i) => {
   if (i < 52) return 0;
   const { tenkan, kijun, senkouA, senkouB } = ichimoku(bars);
-  const t = tenkan[i], k = kijun[i], sa = senkouA[i], sb = senkouB[i];
-  const tPrev = tenkan[i - 1], kPrev = kijun[i - 1];
-  if (t == null || k == null || sa == null || sb == null || tPrev == null || kPrev == null) return 0;
+  const t = tenkan[i],
+    k = kijun[i],
+    sa = senkouA[i],
+    sb = senkouB[i];
+  const tPrev = tenkan[i - 1],
+    kPrev = kijun[i - 1],
+    saPrev = senkouA[i - 1],
+    sbPrev = senkouB[i - 1];
+  if (
+    t == null ||
+    k == null ||
+    sa == null ||
+    sb == null ||
+    tPrev == null ||
+    kPrev == null ||
+    saPrev == null ||
+    sbPrev == null
+  )
+    return 0;
   const cloudTop = Math.max(sa, sb);
   const cloudBot = Math.min(sa, sb);
+  const cloudTopPrev = Math.max(saPrev, sbPrev);
+  const cloudBotPrev = Math.min(saPrev, sbPrev);
   const price = bars[i].close;
+  const pricePrev = bars[i - 1].close;
+
+  // Classic: TK cross in the direction of the cloud
   if (tPrev <= kPrev && t > k && price > cloudTop) return 1;
   if (tPrev >= kPrev && t < k && price < cloudBot) return -1;
+
+  // Kumo breakout + TK stack (price was at/inside cloud last bar)
+  if (t > k && price > cloudTop && pricePrev <= cloudTopPrev) return 1;
+  if (t < k && price < cloudBot && pricePrev >= cloudBotPrev) return -1;
+
   return 0;
 };
 
