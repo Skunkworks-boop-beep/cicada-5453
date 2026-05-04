@@ -16,6 +16,7 @@ import { LiveSpreadPanel } from '../components/LiveSpreadPanel';
 import { TerminalHeader } from '../components/TerminalHeader';
 import { ServerOffload } from '../components/ServerOffload';
 import { ProcessMonitor } from '../components/ProcessMonitor';
+import { GeometricMapPanel } from '../components/GeometricMapPanel';
 import { InstrumentSelector } from '../components/InstrumentSelector';
 import { useTradingStore } from '../store/TradingStore';
 import { getNextDueRebuilds } from '../core/scheduler';
@@ -160,6 +161,7 @@ export default function Dashboard() {
                 <ProcessMonitor />
                 <LivePortfolio />
                 <BotExecutionLog />
+                <GeometricMapPanel />
                 <BrokersManager />
                 <TradingModes />
                 <StrategyLibrary />
