@@ -194,3 +194,35 @@ def test_session_tagged_to_clock_hour(tmp_path: Path):
     mon = LatencyMonitor(store=s, health_check=lambda: None, clock=clock)
     row = mon.sample_once()
     assert row.market_session == "LONDON_NY_OVERLAP"
+
+
+# ── Stage 2B fix B: env-gate ─────────────────────────────────────────────
+
+
+def test_bootstrap_daemon_skips_monitor_when_env_disabled(monkeypatch):
+    """Architectural review §3.2: importing ``cicada_nn.api`` must not spawn
+    a daemon thread when ``CICADA_LATENCY_MONITOR=0``. The thread default is
+    ON for production; this test pins the test/REPL escape hatch."""
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", "0")
+    # Import inside the test so the env var is honoured at startup-hook time.
+    import importlib
+
+    import cicada_nn.api as api  # noqa: WPS433
+    importlib.reload(api)
+    api.LATENCY_MONITOR.stop()  # belt-and-braces in case a prior test started it
+    api._bootstrap_daemon()
+    assert api.LATENCY_MONITOR._thread is None or not api.LATENCY_MONITOR._thread.is_alive()
+
+
+def test_bootstrap_daemon_starts_monitor_by_default(monkeypatch):
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", "1")
+    import importlib
+
+    import cicada_nn.api as api  # noqa: WPS433
+    importlib.reload(api)
+    api._bootstrap_daemon()
+    try:
+        assert api.LATENCY_MONITOR._thread is not None
+        assert api.LATENCY_MONITOR._thread.is_alive()
+    finally:
+        api.LATENCY_MONITOR.stop()

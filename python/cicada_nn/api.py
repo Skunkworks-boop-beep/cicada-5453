@@ -136,10 +136,18 @@ def _bootstrap_daemon():
         # Stage 2A: start the bridge-RTT monitor. The daemon thread polls
         # localhost:5000/health every 30s and writes latency_log rows that
         # the per-mode trade gate reads on every order.
-        try:
-            LATENCY_MONITOR.start()
-        except Exception:
-            logger.exception("latency_monitor failed to start; trade gates will reject as BASELINE_NOT_ESTABLISHED until samples accumulate")
+        #
+        # Stage 2B fix B: gate on CICADA_LATENCY_MONITOR. Default ON for
+        # production; tests / REPL inspection set it to "0" so importing
+        # ``cicada_nn.api`` and running ``_bootstrap_daemon`` does not
+        # spawn a daemon thread polling localhost. Architectural review §3.2.
+        if (os.environ.get("CICADA_LATENCY_MONITOR", "1") or "1").lower() not in ("0", "false", "no"):
+            try:
+                LATENCY_MONITOR.start()
+            except Exception:
+                logger.exception("latency_monitor failed to start; trade gates will reject as BASELINE_NOT_ESTABLISHED until samples accumulate")
+        else:
+            logger.info("latency_monitor not started (CICADA_LATENCY_MONITOR disabled)")
         EVENT_BUS.publish("daemon", kind="boot", launched=launched, stale_shadow_cleared=cleared)
     except Exception:
         logger.exception("daemon bootstrap failed; bots will not auto-trade until /daemon/deploy is called")
@@ -509,6 +517,12 @@ CHECKPOINT_DIR = Path(os.environ.get("CICADA_NN_CHECKPOINTS", "checkpoints"))
 STORAGE = StorageService(CHECKPOINT_DIR)
 SHADOW_REGISTRY = ShadowRegistry(CHECKPOINT_DIR)
 
+# Stage 2B: where geometric / execution-quality / context-layer artefacts
+# live on disk. Created on import so the read endpoints don't 500 on a
+# fresh clone.
+(CHECKPOINT_DIR / "maps").mkdir(parents=True, exist_ok=True)
+(CHECKPOINT_DIR / "context_layer").mkdir(parents=True, exist_ok=True)
+
 # ── Stage 2A: latency monitor wiring ─────────────────────────────────────
 # Shares the orders.sqlite file with OrderRecordStore so the spec's "single
 # trading.db" footprint is preserved. SQLite WAL handles the two
@@ -772,6 +786,146 @@ def latency_baseline():
         "session_profile": LATENCY_MODEL.session_profile(),
         "day_of_week_profile": LATENCY_MODEL.day_of_week_profile(),
         "current_session": LATENCY_MODEL.market_session_now(),
+    }
+
+
+# ── Stage 2B: analytical-core endpoints ──────────────────────────────────
+
+
+_MAP_OUT_DIR = CHECKPOINT_DIR / "maps"
+_CONTEXT_OUT_DIR = CHECKPOINT_DIR / "context_layer"
+
+
+class TrainSymbolRequest(BaseModel):
+    symbol: str
+
+
+@app.get("/map/geometric/{symbol}")
+def map_geometric(symbol: str):
+    """Return the latest persisted geometric map for ``symbol``.
+
+    The dashboard's GeometricMapPanel polls this every 30s. Returns 404
+    when no map has been built yet so the UI can render the
+    ``[ NO MAP — RUN BUILD ]`` empty state."""
+    from .geometric_map import latest_geometric_map
+    gmap = latest_geometric_map(_MAP_OUT_DIR, symbol)
+    if gmap is None:
+        raise HTTPException(status_code=404, detail=f"no geometric map for {symbol}")
+    return gmap.to_dict()
+
+
+@app.get("/map/execution_quality/{symbol}")
+def map_execution_quality(symbol: str):
+    """Return the latest persisted execution-quality map for ``symbol``."""
+    from .execution_quality_map import latest_execution_quality_map
+    eqmap = latest_execution_quality_map(_MAP_OUT_DIR, symbol)
+    if eqmap is None:
+        raise HTTPException(status_code=404, detail=f"no execution-quality map for {symbol}")
+    return eqmap.to_dict()
+
+
+@app.post("/train/loss_inversion", dependencies=[Depends(require_api_key)])
+def train_loss_inversion(req: TrainSymbolRequest):
+    """Run loss inversion over the closed trades the daemon has stored for
+    ``symbol``. Returns the count of INVERSION events produced.
+
+    The events are returned in-line so the operator can inspect them; the
+    context-layer trainer is the place that persists them as labels."""
+    from .loss_inversion import invert_losing_trades
+    closed = STORAGE.positions.read().get("closedTradesByBot") or {}
+    matches: list[dict] = []
+    for bot_id, trades in closed.items():
+        for t in trades or []:
+            sym = (t.get("instrument_symbol") or t.get("symbol") or "").upper()
+            if sym == req.symbol.upper():
+                matches.append({**t, "trade_id": t.get("trade_id") or f"{bot_id}-{t.get('id') or len(matches)}"})
+    events = invert_losing_trades(matches)
+    return {
+        "symbol": req.symbol,
+        "inversion_count": len(events),
+        "events": [e.to_dict() for e in events],
+    }
+
+
+@app.post("/train/context_layer", dependencies=[Depends(require_api_key)])
+def train_context_layer_endpoint(req: TrainSymbolRequest):
+    """Build the context layer for ``symbol`` and train the 4-class NN.
+
+    Reads bars via the bridge (``mt5_client.get_rates``); reads the latest
+    geometric and execution-quality maps from disk. Calls the look-ahead
+    validator before any tensor work so a leak surfaces here, not at
+    inference time."""
+    from .context_layer import build_context_layer
+    from .execution_quality_map import latest_execution_quality_map
+    from .fakeout_detection import detect_fakeouts
+    from .geometric_map import latest_geometric_map
+    from .loss_inversion import invert_losing_trades
+    from .train import train_context_layer
+
+    gmap = latest_geometric_map(_MAP_OUT_DIR, req.symbol)
+    if gmap is None:
+        raise HTTPException(status_code=400, detail="run /train/geometric_map (or build) before /train/context_layer")
+    eqmap = latest_execution_quality_map(_MAP_OUT_DIR, req.symbol)
+    bars = mt5_client.get_rates(req.symbol, "M5", count=2_000) or []
+    if not bars:
+        raise HTTPException(status_code=400, detail=f"no bars available for {req.symbol}")
+    closed = STORAGE.positions.read().get("closedTradesByBot") or {}
+    flat_trades: list[dict] = []
+    for bot_id, trades in closed.items():
+        for t in trades or []:
+            sym = (t.get("instrument_symbol") or t.get("symbol") or "").upper()
+            if sym == req.symbol.upper():
+                flat_trades.append({**t, "trade_id": t.get("trade_id") or f"{bot_id}-{t.get('id') or len(flat_trades)}"})
+    inversions = invert_losing_trades(flat_trades)
+    fakeouts = detect_fakeouts(bars, gmap)
+    rows = build_context_layer(
+        bars=bars,
+        geometric_map=gmap,
+        execution_quality_map=eqmap,
+        fakeouts=fakeouts,
+        inversions=inversions,
+    )
+    save_path, metrics = train_context_layer(
+        context_rows=rows,
+        instrument_id=req.symbol,
+        output_dir=CHECKPOINT_DIR,
+    )
+    return {
+        "saved": str(save_path),
+        "n_rows": metrics["n_rows"],
+        "final_loss": metrics["final_loss"],
+        "accuracy": metrics["accuracy"],
+        "temperature": metrics["temperature"],
+        "inversion_count": len(inversions),
+        "fakeout_count": len(fakeouts),
+    }
+
+
+@app.get("/context_layer/{symbol}")
+def context_layer_rows(symbol: str, offset: int = 0, limit: int = 200):
+    """Paginated context-layer rows for ``symbol``. Used by the dashboard's
+    inspection panel and by the operator's notebook tooling."""
+    from .context_layer import build_context_layer
+    from .geometric_map import latest_geometric_map
+    gmap = latest_geometric_map(_MAP_OUT_DIR, symbol)
+    bars = mt5_client.get_rates(symbol, "M5", count=2_000) or []
+    if not bars:
+        raise HTTPException(status_code=404, detail=f"no bars for {symbol}")
+    rows = build_context_layer(bars=bars, geometric_map=gmap)
+    page = rows[max(0, offset) : max(0, offset) + max(1, min(2000, limit))]
+    return {
+        "symbol": symbol,
+        "offset": offset,
+        "limit": limit,
+        "total": len(rows),
+        "rows": [
+            {
+                "t": r.t,
+                "features": r.features,
+                "labels": r.labels,
+            }
+            for r in page
+        ],
     }
 
 
