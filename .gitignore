@@ -49,3 +49,8 @@ python/checkpoints/*.lock
 python/checkpoints/jobs.json
 python/checkpoints/maps/
 python/checkpoints/context_layer/
+
+# Top-level checkpoints/ is the scratch directory created when api.py boots
+# with the default CICADA_NN_CHECKPOINTS=checkpoints (cwd-relative). Tests
+# write maps + sqlite here. Never tracked.
+/checkpoints/
