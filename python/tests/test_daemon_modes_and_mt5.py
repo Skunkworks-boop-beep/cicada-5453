@@ -73,14 +73,25 @@ def test_auto_returns_none_when_filters_empty_candidates():
 
 
 def test_mt5_status_when_package_missing():
-    """When the MetaTrader5 package isn't installed (true on this CI), status
-    must report ``installed=False`` and never raise."""
+    """When the MT5 bridge is unreachable (true on this CI — no VM running),
+    status must report ``installed=False`` and never raise.
+
+    The error string was rewritten when Stage 2A introduced the bridge
+    abstraction: there's no longer a host-side MetaTrader5 package to
+    detect, so the diagnostic now points at the bridge instead. We accept
+    either the new bridge-shaped phrasing or the legacy string for
+    operators still on a pre-Stage-2A snapshot."""
     status = mt5_client.connection_status()
     assert "installed" in status
     if not mt5_client.MT5_AVAILABLE:
         assert status["installed"] is False
         assert status["connected"] is False
-        assert "MetaTrader5 package not installed" in status["error"]
+        err = status.get("error") or status.get("last_error") or ""
+        assert (
+            "bridge unreachable" in err
+            or "MT5 not connected inside VM" in err
+            or "MetaTrader5 package not installed" in err
+        ), f"unexpected error string: {err!r}"
 
 
 def test_mt5_reconnect_without_credentials_returns_error():

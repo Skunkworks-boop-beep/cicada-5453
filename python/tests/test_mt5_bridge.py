@@ -165,3 +165,92 @@ def test_unexpected_response_type_raises_bridge_error():
     b, _ = _bridge_with({("POST", "/order/place"): "not-a-dict"})
     with pytest.raises(BridgeError):
         b.place_order(symbol="EURUSD", direction="LONG", volume=0.10)
+
+
+# ── Stage 2B fix C: MT5Bridge.get_account ────────────────────────────────
+
+
+def test_get_account_round_trips_real_payload():
+    """The Bridge surface must round-trip the full /account payload so
+    mt5_client can surface real balance/equity to the dashboard."""
+    payload = {
+        "login": "12345",
+        "server": "MetaQuotes-Demo",
+        "currency": "USD",
+        "balance": 10_000.0,
+        "equity": 10_100.0,
+        "leverage": 200,
+        "margin": 0.0,
+        "margin_free": 10_100.0,
+        "profit": 100.0,
+        "trade_allowed": True,
+        "company": "MetaQuotes",
+    }
+    b, fake = _bridge_with({("GET", "/account"): payload})
+    out = b.get_account()
+    assert out == payload
+    assert fake.calls[0][:2] == ("GET", "http://test/account")
+
+
+def test_get_account_unreachable_raises():
+    b, _ = _bridge_with({("GET", "/account"): BridgeUnreachableError("vm down")})
+    with pytest.raises(BridgeUnreachableError):
+        b.get_account()
+
+
+# ── Stage 2B fix A: TTL cache on is_reachable ────────────────────────────
+
+
+def test_is_reachable_caches_within_ttl():
+    """Within the TTL window, two calls to ``is_reachable`` must result
+    in exactly one underlying HTTP probe. Architectural review §3.1."""
+    from cicada_nn import mt5_bridge as br
+
+    fake = _FakeHttp({("GET", "/health"): {"status": "ok", "mt5_connected": True}})
+    bridge = MT5Bridge(base_url="http://test", http=fake)
+    br.set_bridge(bridge)
+    try:
+        assert br.is_reachable(timeout_s=1.0) is True
+        assert br.is_reachable(timeout_s=1.0) is True
+        assert len(fake.calls) == 1
+    finally:
+        br.set_bridge(None)
+        br._reachable_cache_clear()
+
+
+def test_is_reachable_re_probes_after_ttl(monkeypatch):
+    from cicada_nn import mt5_bridge as br
+
+    fake = _FakeHttp({("GET", "/health"): {"status": "ok", "mt5_connected": False}})
+    bridge = MT5Bridge(base_url="http://test", http=fake)
+    br.set_bridge(bridge)
+    try:
+        # Force a 0s TTL so we don't sleep in tests.
+        monkeypatch.setattr(br, "_REACHABLE_TTL_S", 0.0)
+        br._reachable_cache_clear()
+        br.is_reachable()
+        br.is_reachable()
+        assert len(fake.calls) == 2
+    finally:
+        br.set_bridge(None)
+        br._reachable_cache_clear()
+
+
+def test_set_bridge_clears_reachable_cache():
+    """Injecting a fresh bridge must invalidate any cached reachability so
+    tests don't leak state across cases."""
+    from cicada_nn import mt5_bridge as br
+
+    fake_ok = _FakeHttp({("GET", "/health"): {"status": "ok", "mt5_connected": True}})
+    bridge_ok = MT5Bridge(base_url="http://test", http=fake_ok)
+    br.set_bridge(bridge_ok)
+    try:
+        assert br.is_reachable() is True
+        # Swap to a bridge that fails — cache must invalidate so the second
+        # probe returns False rather than the stale True.
+        fake_bad = _FakeHttp({("GET", "/health"): BridgeUnreachableError("vm down")})
+        br.set_bridge(MT5Bridge(base_url="http://test", http=fake_bad))
+        assert br.is_reachable() is False
+    finally:
+        br.set_bridge(None)
+        br._reachable_cache_clear()

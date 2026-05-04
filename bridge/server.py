@@ -57,6 +57,24 @@ class HealthResponse(BaseModel):
     account: Optional[str] = None
 
 
+class AccountResponse(BaseModel):
+    """Stage 2B fix C: real account snapshot from ``mt5.account_info()``.
+
+    Replaces the placeholder zeros previously synthesised by
+    ``mt5_client.get_account``. Architectural review §3.4."""
+    login: str
+    server: str = ""
+    currency: str = ""
+    balance: float = 0.0
+    equity: float = 0.0
+    leverage: int = 0
+    margin: float = 0.0
+    margin_free: float = 0.0
+    profit: float = 0.0
+    trade_allowed: bool = True
+    company: str = ""
+
+
 class OrderPlaceRequest(BaseModel):
     symbol: str
     direction: str = Field(pattern="^(LONG|SHORT)$")
@@ -179,6 +197,32 @@ def health() -> HealthResponse:
         status="ok",
         mt5_connected=info is not None,
         account=(str(getattr(info, "login", "")) if info is not None else None),
+    )
+
+
+@app.get("/account", response_model=AccountResponse)
+def account() -> AccountResponse:
+    """Stage 2B fix C: full ``mt5.account_info()`` snapshot.
+
+    Returns 503 when MT5 isn't installed inside the VM (``_require_mt5``
+    raises) and 503 + detail when MT5 is installed but no account is
+    logged in (``account_info()`` returns ``None``)."""
+    m = _require_mt5()
+    info = m.account_info()
+    if info is None:
+        raise HTTPException(status_code=503, detail="MT5 not connected inside VM")
+    return AccountResponse(
+        login=str(getattr(info, "login", "")),
+        server=str(getattr(info, "server", "") or ""),
+        currency=str(getattr(info, "currency", "") or ""),
+        balance=float(getattr(info, "balance", 0.0) or 0.0),
+        equity=float(getattr(info, "equity", 0.0) or 0.0),
+        leverage=int(getattr(info, "leverage", 0) or 0),
+        margin=float(getattr(info, "margin", 0.0) or 0.0),
+        margin_free=float(getattr(info, "margin_free", 0.0) or 0.0),
+        profit=float(getattr(info, "profit", 0.0) or 0.0),
+        trade_allowed=bool(getattr(info, "trade_allowed", True)),
+        company=str(getattr(info, "company", "") or ""),
     )
 
 

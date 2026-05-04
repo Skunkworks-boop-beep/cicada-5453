@@ -54,7 +54,21 @@ def _build_stub_mt5() -> types.SimpleNamespace:
         return state["rates"]
 
     def account_info():
-        return types.SimpleNamespace(login=12345)
+        # Stage 2B fix C: return the full real-account snapshot the new
+        # /account endpoint surfaces.
+        return types.SimpleNamespace(
+            login=12345,
+            server="MetaQuotes-Demo",
+            currency="USD",
+            balance=10_000.0,
+            equity=10_125.50,
+            leverage=200,
+            margin=125.0,
+            margin_free=10_000.50,
+            profit=125.50,
+            trade_allowed=True,
+            company="MetaQuotes Software Corp.",
+        )
 
     def last_error():
         return (0, "ok")
@@ -116,6 +130,41 @@ def test_health_reports_mt5_connected(bridge_app):
     assert body["status"] == "ok"
     assert body["mt5_connected"] is True
     assert body["account"] == "12345"
+
+
+# ── /account (Stage 2B fix C) ────────────────────────────────────────────
+
+
+def test_account_returns_full_snapshot(bridge_app):
+    """The /account endpoint must surface the real balance / equity /
+    currency / leverage values from mt5.account_info() — no placeholder
+    zeros. Architectural review §3.4."""
+    client, _, _ = bridge_app
+    r = client.get("/account")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["login"] == "12345"
+    assert body["server"] == "MetaQuotes-Demo"
+    assert body["currency"] == "USD"
+    assert body["balance"] == 10_000.0
+    assert body["equity"] == 10_125.50
+    assert body["leverage"] == 200
+    assert body["margin"] == 125.0
+    assert body["margin_free"] == 10_000.50
+    assert body["profit"] == 125.50
+    assert body["trade_allowed"] is True
+    assert body["company"] == "MetaQuotes Software Corp."
+
+
+def test_account_503_when_no_login(bridge_app):
+    """When MT5 is installed but no account is logged in, /account must
+    return 503 (not synthesise zeros). The mt5_client proxy then maps
+    that into ``None`` which the dashboard renders as a clear empty state."""
+    client, stub, _ = bridge_app
+    # Patch the stub so account_info returns None — simulates no login.
+    stub.account_info = lambda: None
+    r = client.get("/account")
+    assert r.status_code == 503
 
 
 # ── /order/place ─────────────────────────────────────────────────────────
