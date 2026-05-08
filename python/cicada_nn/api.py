@@ -149,6 +149,31 @@ def _bootstrap_daemon():
                 logger.exception("latency_monitor failed to start; trade gates will reject as BASELINE_NOT_ESTABLISHED until samples accumulate")
         else:
             logger.info("latency_monitor not started (CICADA_LATENCY_MONITOR disabled)")
+
+        # Stage 3: reconciler + drift monitor — env-gated, mirrors the
+        # latency-monitor pattern so test imports don't accidentally spawn
+        # polling. CICADA_DISABLE_RECONCILER=1 / CICADA_DISABLE_DRIFT=1
+        # are the kill switches.
+        from .reconciler import reconciler_enabled, set_reconciler, Reconciler
+        from .drift_monitor import drift_monitor_enabled, set_drift_monitor, DriftMonitor
+        if reconciler_enabled():
+            try:
+                _reconciler = Reconciler(STORAGE.orders)
+                set_reconciler(_reconciler)
+                _reconciler.start()
+            except Exception:
+                logger.exception("reconciler failed to start; position discrepancies will not be auto-detected")
+        else:
+            logger.info("reconciler not started (CICADA_DISABLE_RECONCILER set)")
+        if drift_monitor_enabled():
+            try:
+                _drift = DriftMonitor(STORAGE.orders)
+                set_drift_monitor(_drift)
+                _drift.start()
+            except Exception:
+                logger.exception("drift_monitor failed to start; drift triggers will not auto-fire")
+        else:
+            logger.info("drift_monitor not started (CICADA_DISABLE_DRIFT set)")
         EVENT_BUS.publish("daemon", kind="boot", launched=launched, stale_shadow_cleared=cleared)
     except Exception:
         logger.exception("daemon bootstrap failed; bots will not auto-trade until /daemon/deploy is called")
@@ -180,6 +205,20 @@ def _shutdown_daemon_hook():
         LATENCY_MONITOR.stop()
     except Exception:
         logger.exception("latency_monitor stop error")
+    try:
+        from .reconciler import get_reconciler
+        r = get_reconciler()
+        if r is not None:
+            r.stop()
+    except Exception:
+        logger.exception("reconciler stop error")
+    try:
+        from .drift_monitor import get_drift_monitor
+        d = get_drift_monitor()
+        if d is not None:
+            d.stop()
+    except Exception:
+        logger.exception("drift_monitor stop error")
 
 
 # ── Daemon control surface ────────────────────────────────────────────────
@@ -788,6 +827,86 @@ def latency_baseline():
         "day_of_week_profile": LATENCY_MODEL.day_of_week_profile(),
         "current_session": LATENCY_MODEL.market_session_now(),
     }
+
+
+# ── Stage 3: drift + reconcile + manual resume ───────────────────────────
+
+
+@app.get("/drift/status")
+def drift_status():
+    """Current drift state — last evaluation, action taken, history.
+
+    The dashboard polls this every 10s and surfaces a red banner +
+    deploy-button-disable when ``halt`` is active. Spec Section 7."""
+    from .daemon_guards import get_guards
+    from .drift_monitor import get_drift_monitor
+
+    monitor = get_drift_monitor()
+    guards_snap = get_guards().snapshot()
+    if monitor is None:
+        return {
+            "available": False,
+            "guards": guards_snap,
+            "snapshot": None,
+        }
+    snap = monitor.snapshot()
+    return {
+        "available": True,
+        "guards": guards_snap,
+        "snapshot": {
+            "last_run_ts": snap.last_run_ts,
+            "chosen_action": snap.chosen_action.value,
+            "chosen_reason": snap.chosen_reason,
+            "actions_applied": snap.actions_applied,
+            "rules": [
+                {
+                    "rule_id": r.rule_id,
+                    "triggered": r.triggered,
+                    "action": r.action.value,
+                    "reason": r.reason,
+                }
+                for r in snap.rules
+            ],
+        },
+    }
+
+
+@app.get("/reconcile/status")
+def reconcile_status():
+    """Last reconciler poll — discrepancies, halt state, MT5 vs tracked count.
+    Spec lines 1050-1064."""
+    from .reconciler import get_reconciler
+    reconciler = get_reconciler()
+    if reconciler is None:
+        return {
+            "available": False,
+            "snapshot": None,
+        }
+    snap = reconciler.snapshot()
+    return {
+        "available": True,
+        "snapshot": {
+            "last_run_ts": snap.last_run_ts,
+            "last_error": snap.last_error,
+            "mt5_position_count": snap.mt5_position_count,
+            "tracked_position_count": snap.tracked_position_count,
+            "halts_raised": snap.halts_raised,
+            "discrepancies": [
+                {"kind": d.kind, "ticket": d.ticket, "detail": d.detail}
+                for d in snap.discrepancies
+            ],
+        },
+    }
+
+
+@app.post("/drift/resume", dependencies=[Depends(require_api_key)])
+def drift_resume():
+    """Operator resume after an emergency_stop_with_audit. Lifts both
+    halts. ``X-API-Key`` is required when ``CICADA_API_KEY`` is set so a
+    misbehaving frontend can't auto-resume past a hard stop."""
+    from .daemon_guards import get_guards
+    get_guards().resume(source="manual", reason="operator resume via /drift/resume")
+    return {"ok": True}
 
 
 # ── Stage 2B: analytical-core endpoints ──────────────────────────────────

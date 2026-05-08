@@ -1501,3 +1501,92 @@ export async function getGeometricMap(symbol: string): Promise<GeometricMap | nu
   }
 }
 
+
+// ─── Stage 3: drift + reconcile + manual resume ─────────────────────────
+
+export interface DriftRule {
+  rule_id: string;
+  triggered: boolean;
+  action: string;
+  reason: string;
+}
+
+export interface DriftSnapshot {
+  last_run_ts: number;
+  chosen_action: string;
+  chosen_reason: string;
+  actions_applied: number;
+  rules: DriftRule[];
+}
+
+export interface DaemonGuardsSnapshot {
+  new_orders_halted: boolean;
+  emergency_stopped: boolean;
+  halt_reason: string | null;
+  emergency_reason: string | null;
+  history: Array<{ ts: number; kind: string; source: string; reason: string }>;
+}
+
+export interface DriftStatus {
+  available: boolean;
+  guards: DaemonGuardsSnapshot;
+  snapshot: DriftSnapshot | null;
+}
+
+/** Poll-friendly drift status. Never throws — returns a sane default
+ *  when the backend isn't reachable so the UI can render an "unknown"
+ *  banner instead of crashing. */
+export async function getDriftStatus(): Promise<DriftStatus | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/drift/status`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    return (await res.json()) as DriftStatus;
+  } catch {
+    return null;
+  }
+}
+
+export interface ReconcileDiscrepancy {
+  kind: string;
+  ticket: number;
+  detail: string;
+}
+
+export interface ReconcileSnapshotPayload {
+  last_run_ts: number;
+  last_error: string | null;
+  mt5_position_count: number;
+  tracked_position_count: number;
+  halts_raised: number;
+  discrepancies: ReconcileDiscrepancy[];
+}
+
+export interface ReconcileStatus {
+  available: boolean;
+  snapshot: ReconcileSnapshotPayload | null;
+}
+
+export async function getReconcileStatus(): Promise<ReconcileStatus | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/reconcile/status`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    return (await res.json()) as ReconcileStatus;
+  } catch {
+    return null;
+  }
+}
+
+/** Manual resume after an emergency_stop_with_audit. Requires X-API-Key
+ *  when CICADA_API_KEY is set on the backend. */
+export async function postDriftResume(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/drift/resume`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}

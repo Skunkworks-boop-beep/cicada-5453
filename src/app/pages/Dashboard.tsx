@@ -14,6 +14,7 @@ import { TickerBar } from '../components/TickerBar';
 import { PriceChart } from '../components/PriceChart';
 import { LiveSpreadPanel } from '../components/LiveSpreadPanel';
 import { TerminalHeader } from '../components/TerminalHeader';
+import { DriftBanner } from '../components/DriftBanner';
 import { ServerOffload } from '../components/ServerOffload';
 import { ProcessMonitor } from '../components/ProcessMonitor';
 import { GeometricMapPanel } from '../components/GeometricMapPanel';
@@ -132,6 +133,7 @@ export default function Dashboard() {
       <div className="flex flex-col h-[calc(100vh-4rem)] overflow-hidden bg-black">
         <div className="flex-1 min-h-0 overflow-auto scrollbar-hide">
           <div className="container mx-auto p-2 sm:p-3 max-w-[1600px] space-y-2 sm:space-y-3">
+            <DriftBanner />
             <TerminalHeader />
             <TickerBar />
             {/* Status strip: single compact row */}

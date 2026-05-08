@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterable, Optional
 from .compute import get_compute_config
 from .event_bus import EVENT_BUS
 from .execution_daemon import BotRuntimeConfig, ExecutionDaemon
+from .daemon_guards import get_guards
 from .order_records import OrderRecordStore, OrderStatus, SLTPEventKind
 from .risk import BotRiskParams, PortfolioState, PositionLite
 from .storage import StorageService
@@ -334,6 +335,64 @@ def daemon_submit_order(
     style = str(meta.get("style") or cfg.trade_style or "day")
     magic = int(meta.get("magic") or 0)
     confidence = meta.get("confidence")
+
+    # Stage 3: guard the entry path against active halts (reconciler ghost
+    # detection, drift halt, emergency stop). The min-hold / per-mode
+    # validation already gated us; guards are the *system-wide* halt that
+    # supersedes per-bot validation. Reject loud, never silent.
+    guards = get_guards()
+    if guards.emergency_stopped:
+        reason = f"emergency_stop:{guards.emergency_reason or 'unknown'}"
+        if store is not None:
+            try:
+                store.append_order(
+                    bot_id=cfg.bot_id,
+                    instrument_id=cfg.instrument_id,
+                    instrument_symbol=cfg.instrument_symbol,
+                    style=style,
+                    side=side,
+                    size=size,
+                    entry_price=entry,
+                    stop_loss=stop,
+                    take_profit=target,
+                    confidence=float(confidence) if confidence is not None else None,
+                    status=OrderStatus.REJECTED,
+                    reason=reason,
+                )
+            except Exception as e:
+                logger.warning("guards reject (emergency) append failed bot=%s: %s", cfg.bot_id, e)
+        EVENT_BUS.publish(
+            "order", bot_id=cfg.bot_id, status="rejected", reason=reason, ts=time.time(),
+        )
+        return {"status": "rejected", "reason": reason}
+
+    # Soft halt: block new entries, but the SL/TP manager is allowed to
+    # keep advancing existing positions (its calls go through
+    # daemon_sl_event, not here).
+    if guards.new_orders_halted and not meta.get("rejected"):
+        reason = f"halt_new_orders:{guards.halt_reason or 'unknown'}"
+        if store is not None:
+            try:
+                store.append_order(
+                    bot_id=cfg.bot_id,
+                    instrument_id=cfg.instrument_id,
+                    instrument_symbol=cfg.instrument_symbol,
+                    style=style,
+                    side=side,
+                    size=size,
+                    entry_price=entry,
+                    stop_loss=stop,
+                    take_profit=target,
+                    confidence=float(confidence) if confidence is not None else None,
+                    status=OrderStatus.REJECTED,
+                    reason=reason,
+                )
+            except Exception as e:
+                logger.warning("guards reject (halt) append failed bot=%s: %s", cfg.bot_id, e)
+        EVENT_BUS.publish(
+            "order", bot_id=cfg.bot_id, status="rejected", reason=reason, ts=time.time(),
+        )
+        return {"status": "rejected", "reason": reason}
 
     if meta.get("rejected"):
         if store is not None:
