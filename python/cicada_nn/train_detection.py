@@ -195,6 +195,50 @@ def bars_to_features(bars: list[dict], i: int, window: int) -> np.ndarray:
     return vec[:base]
 
 
+def _atr_distribution_meta(bars: list[dict], lookback: int = 14, window: int = 100) -> dict:
+    """Compute the training-window ATR distribution stats.
+
+    Stage 5: feeds ``drift_monitor.volatility_regime_rule`` which fires
+    when live ATR drifts >2σ above the training mean. We compute one
+    ATR per ``window``-bar slice across the full training data, then
+    take the mean and stdev of those.
+
+    Returns a dict with ``training_atr_mean`` and ``training_atr_stdev``,
+    both ``None`` when the input is too short."""
+    if not bars or len(bars) < lookback + window + 1:
+        return {"training_atr_mean": None, "training_atr_stdev": None}
+    samples: list[float] = []
+    # Step the ATR window through the data; ~10 samples is enough.
+    step = max(1, len(bars) // 20)
+    for end in range(lookback + 1, len(bars), step):
+        slice_bars = bars[max(0, end - lookback - 1) : end]
+        if len(slice_bars) < lookback + 1:
+            continue
+        prev_close = float(slice_bars[0].get("close") or 0.0)
+        if prev_close <= 0:
+            continue
+        trs: list[float] = []
+        for b in slice_bars[1:]:
+            high = float(b.get("high") or 0.0)
+            low = float(b.get("low") or 0.0)
+            close = float(b.get("close") or 0.0)
+            if high <= 0 or low <= 0 or close <= 0:
+                continue
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+            prev_close = close
+        if trs:
+            samples.append(sum(trs) / len(trs))
+    if len(samples) < 2:
+        return {"training_atr_mean": None, "training_atr_stdev": None}
+    mean = sum(samples) / len(samples)
+    var = sum((s - mean) ** 2 for s in samples) / len(samples)
+    return {
+        "training_atr_mean": mean,
+        "training_atr_stdev": var ** 0.5,
+    }
+
+
 def _bars_matrix(bars: list[dict]) -> np.ndarray:
     """Return an OHLC-by-bar matrix for vectorised labeling."""
     arr = np.zeros((len(bars), 4), dtype=np.float64)
@@ -485,6 +529,11 @@ def train_detection(
         "safe_to_use": safe_to_use,
         "promotion_floor": promotion_floor,
         "inversion_score": inversion_score,
+        # Stage 5: training ATR distribution. The drift_monitor's
+        # volatility_regime rule reads these to decide when live ATR has
+        # drifted >2σ above training. Computed once at train time so
+        # inference doesn't pay the cost.
+        **_atr_distribution_meta(bars),
     }
     torch.save(
         {

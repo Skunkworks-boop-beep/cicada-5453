@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+      - 'wip/**'
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch when a new commit lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (Stage 1-5 suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'python/requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
+          pip install pytest psutil
+
+      - name: Run full pytest suite
+        env:
+          PYTHONPATH: python
+          # Stage 4 / 5 env gates default ON; CI must not start the daemon
+          # threads (no real bridge in CI), so disable them explicitly.
+          CICADA_LATENCY_MONITOR: '0'
+          CICADA_DISABLE_RECONCILER: '1'
+          CICADA_DISABLE_DRIFT: '1'
+          CICADA_DISABLE_EXECUTION_DAEMON: '1'
+        run: |
+          cd python && python -m pytest tests/ -v --tb=short
+          cd .. && PYTHONPATH=python python -m pytest bridge/test_bridge_contract.py -v
+
+  typescript:
+    name: TypeScript (vitest + build + parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run vitest
+        run: npx vitest run
+
+      - name: Verify build
+        run: npm run build
+
+      - name: Verify trade-mode parity
+        run: npx tsx scripts/verify-trade-mode-parity.ts
+
+  abstraction-guards:
+    name: Abstraction guards (only bridge/server.py imports MetaTrader5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run abstraction guard tests
+        run: |
+          pip install pytest
+          cd python && python -m pytest tests/test_mt5_abstraction.py -v

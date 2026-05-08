@@ -35,7 +35,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from . import mt5_bridge
 from .daemon_guards import GUARDS, DaemonGuards
@@ -266,6 +266,13 @@ class DriftMonitor:
         clock: Callable[[], float] = time.time,
         rules: tuple[Callable[[DriftContext], RuleResult], ...] = ALL_RULES,
         interval_s: float = _DEFAULT_INTERVAL_S,
+        # Stage 5: drift-context input providers. Each is optional — when
+        # absent, the corresponding rule degrades to "missing inputs"
+        # instead of firing on bad data.
+        portfolio_provider: Optional[Callable[[], Any]] = None,
+        bots_provider: Optional[Callable[[], list[dict]]] = None,
+        bars_provider: Optional[Callable[[str, str, int], list[dict]]] = None,
+        atr_meta_provider: Optional[Callable[[str], Optional[dict]]] = None,
     ):
         self._store = order_store
         self._guards = guards
@@ -279,6 +286,10 @@ class DriftMonitor:
         self.interval_s = interval_s
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._portfolio_provider = portfolio_provider
+        self._bots_provider = bots_provider
+        self._bars_provider = bars_provider
+        self._atr_meta_provider = atr_meta_provider
 
     # ── Public surface ────────────────────────────────────────────────
 
@@ -365,7 +376,13 @@ class DriftMonitor:
         Stage 4 wires ``historical_fakeout_rate`` from the same store:
         we slice the order history into a "recent" window (last 200) and
         a "historical" window (rows 200-2000) and compute the fakeout
-        rate over each. The rule fires when recent > 3 × historical."""
+        rate over each.
+
+        Stage 5 wires the remaining inputs via the provider callbacks
+        injected into the constructor — every TODO from the original
+        Stage 3 stub now has a real source. When a provider is absent,
+        the field stays None and the rule degrades to "missing inputs"
+        instead of firing on bad data."""
         # Pull a 2,000-row deep window to slice into recent + historical.
         rows = self._store.list_orders(limit=2_000)
         # Confidence drop rule: pull recent confidences from filled rows.
@@ -390,17 +407,88 @@ class DriftMonitor:
         # to be meaningful. Below that the rule should stay silent.
         historical_fakeout_rate = _fakeout_rate(historical_window) if len(historical_window) >= 200 else None
 
+        # ── Drawdown inputs (Stage 5) ────────────────────────────────
+        live_drawdown_pct: Optional[float] = None
+        expected_drawdown_pct: Optional[float] = None
+        if self._portfolio_provider is not None:
+            try:
+                portfolio = self._portfolio_provider()
+                if portfolio is not None:
+                    live_drawdown_pct = float(getattr(portfolio, "drawdown_pct", 0.0) or 0.0)
+            except Exception as e:
+                logger.debug("portfolio_provider failed: %s", e)
+        if self._bots_provider is not None:
+            try:
+                bots = self._bots_provider() or []
+                # Use the maximum tolerance across deployed bots — if any one
+                # bot's tolerance is breached 3×, the portfolio-level rule
+                # should fire. Conservative for a multi-bot deployment.
+                tolerances: list[float] = []
+                for b in bots:
+                    if (b.get("status") or "").lower() != "deployed":
+                        continue
+                    risk = b.get("riskParams") or {}
+                    tol = float(risk.get("maxDrawdownPct") or 0)
+                    if tol > 0:
+                        tolerances.append(tol)
+                if tolerances:
+                    expected_drawdown_pct = max(tolerances)
+            except Exception as e:
+                logger.debug("bots_provider failed: %s", e)
+
+        # ── ATR inputs (Stage 5) ─────────────────────────────────────
+        current_atr: Optional[float] = None
+        training_atr_mean: Optional[float] = None
+        training_atr_stdev: Optional[float] = None
+        # Pick the first deployed bot's instrument as the reference point.
+        # Single-instrument shops will have one anyway; multi-instrument
+        # shops should have a per-instrument drift monitor in a future
+        # stage — this is a reasonable interim baseline.
+        if self._bots_provider is not None and self._bars_provider is not None:
+            try:
+                bots = self._bots_provider() or []
+                deployed = [b for b in bots if (b.get("status") or "").lower() == "deployed"]
+                if deployed:
+                    b0 = deployed[0]
+                    inst_id = b0.get("instrumentId") or ""
+                    tf = (b0.get("timeframes") or ["M5"])[0]
+                    bars = self._bars_provider(inst_id, tf, 60)
+                    current_atr = _compute_atr_from_bars(bars, lookback=14)
+                    if self._atr_meta_provider is not None:
+                        meta = self._atr_meta_provider(inst_id)
+                        if meta:
+                            tm = meta.get("training_atr_mean")
+                            ts = meta.get("training_atr_stdev")
+                            if tm is not None:
+                                training_atr_mean = float(tm)
+                            if ts is not None:
+                                training_atr_stdev = float(ts)
+            except Exception as e:
+                logger.debug("atr inputs failed: %s", e)
+
+        # ── Prediction-error inputs (Stage 5) ────────────────────────
+        # We compute per-trade error from the appended ``closed`` rows:
+        # error = 1 when the realised PnL sign disagrees with the bot's
+        # signal direction (LONG with negative PnL = wrong; SHORT with
+        # positive PnL = wrong; the rest = right). The closed row's
+        # ``reason`` field carries pnl info via close_reason; we proxy
+        # using the row's ``side`` + the next-row's ``entry_price`` move.
+        # Simpler: any row with status=closed and reason containing
+        # "loss" / "fail" / "wrong" counts as an error. Otherwise right.
+        # This is cheap and gives the rule something honest to evaluate.
+        recent_errors, error_baseline = _compute_prediction_errors(rows)
+
         return DriftContext(
             recent_confidences=confidences[-CONFIDENCE_DROP_LOOKBACK * 2 :],
-            recent_errors=[],            # TODO Stage 5: backtest-vs-live error tracking
-            error_baseline=None,         # TODO Stage 5
-            current_atr=None,            # TODO Stage 5: read from execution_quality_map
-            training_atr_mean=None,      # TODO Stage 5
-            training_atr_stdev=None,     # TODO Stage 5
+            recent_errors=recent_errors,
+            error_baseline=error_baseline,
+            current_atr=current_atr,
+            training_atr_mean=training_atr_mean,
+            training_atr_stdev=training_atr_stdev,
             recent_fakeout_rate=recent_fakeout_rate,
             historical_fakeout_rate=historical_fakeout_rate,
-            live_drawdown_pct=None,      # TODO Stage 5: from equity-history slice
-            expected_drawdown_pct=None,  # TODO Stage 5: from backtest stats
+            live_drawdown_pct=live_drawdown_pct,
+            expected_drawdown_pct=expected_drawdown_pct,
         )
 
     def tick(self) -> DriftSnapshot:
@@ -437,6 +525,61 @@ class DriftMonitor:
     @staticmethod
     def _default_close_position(ticket: int) -> None:
         mt5_bridge.get_bridge().close_position(ticket=ticket)
+
+
+# ── Helpers for the build_context input plumbing ─────────────────────
+
+
+def _compute_atr_from_bars(bars: list[dict], lookback: int = 14) -> Optional[float]:
+    """ATR (true range mean) over the last ``lookback`` bars. Returns
+    None when there's not enough data so the rule degrades cleanly."""
+    if not bars or len(bars) < lookback + 1:
+        return None
+    trs: list[float] = []
+    prev_close = float(bars[-lookback - 1].get("close") or 0.0)
+    if prev_close <= 0:
+        return None
+    for i in range(-lookback, 0):
+        b = bars[i]
+        high = float(b.get("high") or 0.0)
+        low = float(b.get("low") or 0.0)
+        close = float(b.get("close") or 0.0)
+        if high <= 0 or low <= 0 or close <= 0:
+            return None
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+        prev_close = close
+    return sum(trs) / max(1, len(trs))
+
+
+def _compute_prediction_errors(rows: list) -> tuple[list[float], Optional[float]]:
+    """Build the (recent_errors, error_baseline) pair from order rows.
+
+    A closed order is treated as a "wrong prediction" when its
+    ``reason`` contains 'loss' or the close was a stop hit (close_reason
+    = 'stop' / 'sl_hit' / similar). We use these heuristics on the
+    append-only orders table — any row with status=closed contributes a
+    binary 0/1 error. The recent window is the last 50 closed rows;
+    the older 50-450 window forms the baseline."""
+    closed = [
+        r for r in rows
+        if r.status == OrderStatus.CLOSED.value
+    ]
+
+    def _is_error(r) -> int:
+        reason = (r.reason or "").lower()
+        if "loss" in reason or "stop" in reason or "sl_hit" in reason or "fakeout" in reason:
+            return 1
+        return 0
+
+    recent = closed[-50:]
+    older = closed[-450:-50] if len(closed) > 50 else []
+    recent_errors = [float(_is_error(r)) for r in recent]
+    if len(older) >= 50:
+        baseline = sum(_is_error(r) for r in older) / len(older)
+    else:
+        baseline = None
+    return recent_errors, baseline
 
 
 # ── Module-level singleton ───────────────────────────────────────────

@@ -167,7 +167,37 @@ def _bootstrap_daemon():
             logger.info("reconciler not started (CICADA_DISABLE_RECONCILER set)")
         if drift_monitor_enabled():
             try:
-                _drift = DriftMonitor(STORAGE.orders)
+                # Stage 5: wire all the drift-context input providers so the
+                # rules have real data instead of None. fetch_bars_for_daemon
+                # already lives in this module's startup path; portfolio +
+                # bot meta come from the persisted store.
+                from .daemon_runtime import (
+                    fetch_bars_for_daemon, get_portfolio_snapshot,
+                )
+
+                def _bots() -> list[dict]:
+                    return STORAGE.bots.read() or []
+
+                def _atr_meta(instrument_id: str) -> dict | None:
+                    """Look up training_atr_mean / training_atr_stdev from the
+                    instrument's detection-model checkpoint meta."""
+                    from .train import _safe_instrument_id
+                    safe = _safe_instrument_id(instrument_id)
+                    meta_path = CHECKPOINT_DIR / f"instrument_detection_{safe}_meta.json"
+                    if not meta_path.exists():
+                        return None
+                    try:
+                        return json.loads(meta_path.read_text())
+                    except Exception:
+                        return None
+
+                _drift = DriftMonitor(
+                    STORAGE.orders,
+                    portfolio_provider=get_portfolio_snapshot,
+                    bots_provider=_bots,
+                    bars_provider=fetch_bars_for_daemon,
+                    atr_meta_provider=_atr_meta,
+                )
                 set_drift_monitor(_drift)
                 _drift.start()
             except Exception:
@@ -772,6 +802,178 @@ def health():
         "cuda_available": torch.cuda.is_available(),
         "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
     }
+
+
+# ── Stage 6: Prometheus /metrics endpoint ────────────────────────────────
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus text-format metrics for live ops observability.
+
+    Without this endpoint, debugging live issues is grep-hunting through
+    logs. Scrape with the standard ``- job_name: cicada`` Prometheus
+    config; pair with Grafana for the dashboards.
+
+    All metrics are *snapshot* values read on demand from the same
+    in-process state the dashboard sees — no separate metrics store, so
+    cardinality stays low (one series per session label, one per drift
+    rule, etc.)."""
+    from fastapi.responses import PlainTextResponse
+    from .daemon_guards import get_guards
+    from .drift_monitor import get_drift_monitor
+    from .reconciler import get_reconciler
+    from . import mt5_bridge
+
+    lines: list[str] = []
+
+    def _add(name: str, help_text: str, kind: str, samples: list[tuple[dict, float]]) -> None:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {kind}")
+        for labels, value in samples:
+            label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+            if label_str:
+                lines.append(f"{name}{{{label_str}}} {value}")
+            else:
+                lines.append(f"{name} {value}")
+
+    # ── Order records: count by status ───────────────────────────────
+    try:
+        rows = STORAGE.orders.list_orders(limit=10_000)
+        status_counts: dict[str, int] = {}
+        for r in rows:
+            status_counts[r.status] = status_counts.get(r.status, 0) + 1
+        _add(
+            "cicada_orders_total",
+            "Total order rows in the append-only orders table by status.",
+            "counter",
+            [({"status": s}, c) for s, c in sorted(status_counts.items())],
+        )
+        # SL/TP event counts.
+        events = STORAGE.orders.list_sl_tp_events(limit=10_000)
+        event_counts: dict[str, int] = {}
+        for e in events:
+            event_counts[e.kind] = event_counts.get(e.kind, 0) + 1
+        _add(
+            "cicada_sl_tp_events_total",
+            "Total sl_tp_events rows by kind (initial/move_be/trail/partial_tp/sl_hit/tp_hit).",
+            "counter",
+            [({"kind": k}, c) for k, c in sorted(event_counts.items())],
+        )
+    except Exception as e:
+        logger.debug("metrics: orders read failed: %s", e)
+
+    # ── Latency: current RTT + per-session p95 ───────────────────────
+    try:
+        rtt = LATENCY_MODEL.get_current_rtt()
+        if rtt is not None:
+            _add(
+                "cicada_latency_rtt_ms",
+                "Most recent measured RTT to the MT5 bridge in milliseconds.",
+                "gauge",
+                [({}, rtt)],
+            )
+        prof = LATENCY_MODEL.session_profile()
+        p95_samples: list[tuple[dict, float]] = []
+        for session, stats in prof.items():
+            if stats.get("sample_count", 0) > 0 and "p95" in stats:
+                p95_samples.append(({"session": session}, float(stats["p95"])))
+        if p95_samples:
+            _add(
+                "cicada_latency_p95_ms",
+                "Per-session 95th-percentile RTT over the rolling 7-day window.",
+                "gauge",
+                p95_samples,
+            )
+    except Exception as e:
+        logger.debug("metrics: latency read failed: %s", e)
+
+    # ── Daemon guards: halt + emergency state ─────────────────────────
+    g = get_guards().snapshot()
+    _add(
+        "cicada_guards_new_orders_halted",
+        "1 when new orders are halted (reconciler ghost / drift soft halt / emergency).",
+        "gauge",
+        [({}, 1 if g["new_orders_halted"] else 0)],
+    )
+    _add(
+        "cicada_guards_emergency_stopped",
+        "1 when the system is in emergency stop and requires manual resume.",
+        "gauge",
+        [({}, 1 if g["emergency_stopped"] else 0)],
+    )
+
+    # ── Drift monitor: action counts + last triggered rule ───────────
+    dm = get_drift_monitor()
+    if dm is not None:
+        snap = dm.snapshot()
+        _add(
+            "cicada_drift_actions_applied_total",
+            "Total drift actions applied since process start.",
+            "counter",
+            [({}, snap.actions_applied)],
+        )
+        # Per-rule trigger state (0 or 1) for the last evaluation pass.
+        rule_samples: list[tuple[dict, float]] = []
+        for r in snap.rules:
+            rule_samples.append(({"rule": r.rule_id}, 1 if r.triggered else 0))
+        if rule_samples:
+            _add(
+                "cicada_drift_rule_triggered",
+                "1 when the rule fired on the most recent evaluation pass.",
+                "gauge",
+                rule_samples,
+            )
+
+    # ── Reconciler: discrepancies by kind ─────────────────────────────
+    rc = get_reconciler()
+    if rc is not None:
+        rsnap = rc.snapshot()
+        kind_counts: dict[str, int] = {}
+        for d in rsnap.discrepancies:
+            kind_counts[d.kind] = kind_counts.get(d.kind, 0) + 1
+        if kind_counts:
+            _add(
+                "cicada_reconcile_discrepancies",
+                "Discrepancies seen on the most recent reconciler pass.",
+                "gauge",
+                [({"kind": k}, c) for k, c in sorted(kind_counts.items())],
+            )
+        _add(
+            "cicada_reconcile_mt5_positions",
+            "Number of positions MT5 reports on the most recent pass.",
+            "gauge",
+            [({}, rsnap.mt5_position_count)],
+        )
+        _add(
+            "cicada_reconcile_tracked_positions",
+            "Number of positions tracked in the orders table on the most recent pass.",
+            "gauge",
+            [({}, rsnap.tracked_position_count)],
+        )
+        _add(
+            "cicada_reconcile_halts_raised_total",
+            "Cumulative halts raised by the reconciler since process start.",
+            "counter",
+            [({}, rsnap.halts_raised)],
+        )
+
+    # ── Bridge reachability ──────────────────────────────────────────
+    try:
+        reachable = mt5_bridge.is_reachable(timeout_s=1.0)
+        _add(
+            "cicada_bridge_reachable",
+            "1 when GET /health on the MT5 bridge succeeded most recently.",
+            "gauge",
+            [({}, 1 if reachable else 0)],
+        )
+    except Exception as e:
+        logger.debug("metrics: bridge probe failed: %s", e)
+
+    return PlainTextResponse(
+        content="\n".join(lines) + "\n",
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 # ── Stage 2A: bridge + latency endpoints ─────────────────────────────────
