@@ -98,9 +98,8 @@ Ensure the frontend can reach this backend (e.g. `VITE_NN_API_URL=http://<that-m
 
 ### Step 4: Connect in the app (via Brokers panel)
 
-1. **Login (optional but recommended for MT5)**  
-   - On the **login page**, you can enter MT5 **Login**, **Password**, and **Server** and submit (without “demo mode”). The frontend calls the backend’s `/mt5/connect` so the backend connects to MT5.  
-   - Alternatively, you can leave login in demo and configure MT5 only under Brokers.
+1. **Login (required)**  
+   - On the **login page**, enter MT5 **Login**, **Password**, and **Server** and submit. The frontend calls the backend's `/mt5/connect`, which routes through the bridge to authenticate inside the Windows VM. Demo mode has been removed in Stage 2B; this is the only login path.
 
 2. **Brokers panel**  
    - In the **[ BROKERS ]** section, find **eXness**.  

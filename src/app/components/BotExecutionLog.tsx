@@ -9,7 +9,11 @@ import { Activity, CheckCircle, XCircle, MinusCircle, AlertCircle, Trash2, Refre
 import { useTradingStore } from '../store/TradingStore';
 import { getRemoteServerUrl } from '../core/config';
 import { isTickContractInstrument } from '../core/tradePnl';
-import { getBotExecutionIntervalMs, POSITION_EVAL_INTERVAL_MS } from '../core/botExecution';
+// Stage 2B: the browser-side trade loop has been deleted. The backend
+// ExecutionDaemon is the only owner of bot execution; this component is
+// now a pure log viewer driven by the SSE event bus + /orders. We still
+// poll /daemon/list to surface a "BACKEND ACTIVE / OFFLINE" pill — when
+// the backend is down there is no fallback, the user just sees no trades.
 import { getDaemonBots } from '../core/api';
 import type { BotExecutionEvent, BotExecutionEventPhase, BotExecutionEventOutcome, BotExecutionEventDetails } from '../core/botExecution';
 
@@ -162,25 +166,12 @@ export function BotExecutionLog() {
     };
   }, [deployedCount]);
 
-  /** Tick even when execution is paused so OHLCV/regime/predict still run (observe-only; no orders). */
-  useEffect(() => {
-    if (daemonOwns) return;
-    const deployed = bots.filter((b) => b.status === 'deployed');
-    if (deployed.length === 0) return;
-    const intervalMs = getBotExecutionIntervalMs(deployed);
-    void actions.tickBotExecution();
-    const interval = setInterval(() => actions.tickBotExecution(), intervalMs);
-    return () => clearInterval(interval);
-  }, [actions, deployedCount, daemonOwns]);
-
-  /** Position-only evaluation: run every 8s when we have open positions. */
-  const hasPositions = portfolio.positions.length > 0;
-  useEffect(() => {
-    if (!execution.enabled || !hasPositions || daemonOwns) return;
-    void actions.tickPositionEvaluation();
-    const interval = setInterval(() => actions.tickPositionEvaluation(), POSITION_EVAL_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, [actions, execution.enabled, hasPositions, daemonOwns]);
+  // Stage 2B: the browser-side runBotExecution + runPositionEvaluation
+  // ticks were removed. The backend ExecutionDaemon owns the trade loop;
+  // when ``daemonOwns`` is false (backend down or no daemon yet polling)
+  // there is no fallback and no trades will fire. This is intentional —
+  // demo/synthetic mode has been deleted, the live MT5 bridge path is
+  // the only path.
 
   useEffect(() => {
     if (!symbolFilter) return;

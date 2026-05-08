@@ -74,7 +74,12 @@ import {
   positionPnl,
   setPositions,
 } from '../core/portfolio';
-import { runBotExecution, runPositionEvaluation, POSITION_EVAL_INTERVAL_MS, type BotExecutionEvent } from '../core/botExecution';
+// Stage 2B: the browser-side trade loop (runBotExecution / runPositionEvaluation)
+// has been deleted. The backend ExecutionDaemon owns the live trade loop now —
+// per-mode validation, append-only orders, SL/TP lifecycle, latency gates and
+// the geometric / execution-quality / fakeout pipeline all live server-side.
+// Only event types are imported from this module for the log viewer.
+import type { BotExecutionEvent } from '../core/botExecution';
 import type { PortfolioState } from '../core/types';
 import { buildScheduleFromInstrumentsAndBots, getNextDueRebuilds } from '../core/scheduler';
 import { loadStateFromBackend, saveState, mergeStrategiesWithPersisted, saveResearchBars, clearResearchBars, type PersistedState } from '../core/persistence';
@@ -96,6 +101,9 @@ import {
   getJobs,
   getJobRecord,
   postJobCancel,
+  postDaemonDeploy,
+  postDaemonAction,
+  type DaemonDeployPayload,
   type JobRecord,
 } from '../core/api';
 import { getPositions, postPositions } from '../core/positionsApi';
@@ -1004,10 +1012,6 @@ export interface TradingStoreActions {
   tickPortfolioPrices: () => void;
   /** Sync instrument spreads from live broker (MT5 or Deriv) when connected. */
   syncInstrumentSpreads: () => Promise<void>;
-  /** Run bot execution: evaluate deployed bots, call NN predict, open positions via risk check. */
-  tickBotExecution: () => Promise<void>;
-  /** Run position-only evaluation: predict for open positions, close on NEUTRAL/opposite. */
-  tickPositionEvaluation: () => Promise<void>;
   clearBotExecutionLog: () => void;
   /** Clear bot NN build trace terminal. */
   clearBotBuildLog: () => void;
@@ -1040,6 +1044,40 @@ export interface TradingStoreActions {
   /** If instrument count is below default registry size, restore full list (fixes stuck 54 etc.). */
   ensureFullInstrumentRegistry: () => void;
 }
+
+/**
+ * Stage 2B: build the backend-daemon deploy payload from a frontend BotConfig.
+ * Mirrors the BotRuntimeConfig fields the daemon expects (see
+ * `python/cicada_nn/execution_daemon.BotRuntimeConfig`). Called by deployBot
+ * and deployAllReadyBots — the daemon now owns every trade decision.
+ */
+function _buildDaemonPayload(b: BotConfig): DaemonDeployPayload {
+  const inst = b.instrumentId;
+  const symbol = b.instrumentSymbol ?? '';
+  const risk = b.riskParams ?? {};
+  const primaryTf = (b.timeframes ?? [])[0] ?? 'M5';
+  const scope = b.fixedScope ?? 'day';
+  return {
+    bot_id: b.id,
+    instrument_id: inst,
+    instrument_symbol: symbol,
+    instrument_type: b.instrumentType ?? 'fiat',
+    primary_timeframe: primaryTf,
+    scope,
+    max_positions: b.maxPositions ?? 2,
+    nn_feature_vector: Array.isArray(b.nnFeatureVector) ? b.nnFeatureVector : [],
+    nn_detection_timeframe: b.nnDetectionTimeframe ?? null,
+    nn_detection_bar_window: b.nnDetectionBarWindow ?? null,
+    risk_per_trade_pct: Number.isFinite(risk.riskPerTradePct) ? risk.riskPerTradePct : 0.01,
+    max_drawdown_pct: Number.isFinite(risk.maxDrawdownPct) ? risk.maxDrawdownPct : 0.15,
+    use_kelly: !!risk.useKelly,
+    kelly_fraction: Number.isFinite(risk.kellyFraction) ? risk.kellyFraction : 0.25,
+    max_correlated_exposure: Number.isFinite(risk.maxCorrelatedExposure) ? risk.maxCorrelatedExposure : 1.5,
+    default_stop_loss_pct: Number.isFinite(risk.defaultStopLossPct) ? risk.defaultStopLossPct : 0.02,
+    default_risk_reward_ratio: Number.isFinite(risk.defaultRiskRewardRatio) ? risk.defaultRiskRewardRatio : 2.0,
+  };
+}
+
 
 function getActions(): TradingStoreActions {
   return {
@@ -2666,6 +2704,14 @@ function getActions(): TradingStoreActions {
       bots = bots.map((x) => (x.id === botId ? deployed : x));
       schedulePersist();
       emit();
+      // Stage 2B: hand the bot to the backend daemon so it actually trades.
+      // The daemon owns per-mode validation, SL/TP lifecycle, latency gates
+      // and the analytical pipeline — there is no FE-side fallback any more.
+      postDaemonDeploy(_buildDaemonPayload(deployed)).catch((e) => {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[TradingStore] daemon deploy failed for', botId, ':', e);
+        }
+      });
     },
     undeployBot(botId) {
       const b = bots.find((x) => x.id === botId);
@@ -2675,6 +2721,11 @@ function getActions(): TradingStoreActions {
       );
       schedulePersist();
       emit();
+      postDaemonAction(botId, 'stop').catch((e) => {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[TradingStore] daemon stop failed for', botId, ':', e);
+        }
+      });
     },
     deployAllReadyBots() {
       const ready = bots.filter((b) => b.status === 'ready');
@@ -2690,6 +2741,16 @@ function getActions(): TradingStoreActions {
       });
       schedulePersist();
       emit();
+      // Fire-and-log: each deploy independently. One failure doesn't abort the rest.
+      for (const b of ready) {
+        const updated = bots.find((x) => x.id === b.id);
+        if (!updated) continue;
+        postDaemonDeploy(_buildDaemonPayload(updated)).catch((e) => {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[TradingStore] daemon deploy failed for', b.id, ':', e);
+          }
+        });
+      }
     },
     undeployAllBots() {
       const deployed = bots.filter((b) => b.status === 'deployed');
@@ -2697,6 +2758,9 @@ function getActions(): TradingStoreActions {
       bots = bots.map((x) =>
         x.status === 'deployed' ? { ...setBotStatus(x, 'ready'), deployedAt: undefined } : x
       );
+      for (const b of deployed) {
+        postDaemonAction(b.id, 'stop').catch(() => { /* logged once is enough */ });
+      }
       schedulePersist();
       emit();
     },
@@ -2952,62 +3016,12 @@ function getActions(): TradingStoreActions {
         }
       }
     },
-    async tickBotExecution() {
-      const pendingBatch: BotExecutionEvent[] = [];
-      await runBotExecution({
-        bots,
-        instruments,
-        brokers,
-        executionEnabled: execution.enabled,
-        closedTradesByBot,
-        onEmit: () => {
-          persistNow();
-          emit();
-        },
-        onEvent: (e) => {
-          const full = pushBotExecutionEvent(e);
-          pendingBatch.push(full);
-          emit();
-        },
-        onClosePosition: ({ position, exitPrice, pnl, nnSlPct, nnTpR, nnSizeMult }) => {
-          recordClosedTrade(position, exitPrice, pnl, { profit: pnl, nnSlPct, nnTpR, nnSizeMult });
-          removePosition(position.id);
-          persistNow();
-          emit();
-        },
-      });
-      if (pendingBatch.length > 0 && getRemoteServerUrl()) {
-        postExecutionLogAppend(pendingBatch as unknown as import('../core/api').ExecutionLogEventPayload[]).catch(() => {});
-      }
-    },
-    async tickPositionEvaluation() {
-      const pendingBatch: BotExecutionEvent[] = [];
-      await runPositionEvaluation({
-        bots,
-        instruments,
-        brokers,
-        executionEnabled: execution.enabled,
-        closedTradesByBot,
-        onEmit: () => {
-          persistNow();
-          emit();
-        },
-        onEvent: (e) => {
-          const full = pushBotExecutionEvent(e);
-          pendingBatch.push(full);
-          emit();
-        },
-        onClosePosition: ({ position, exitPrice, pnl, nnSlPct, nnTpR, nnSizeMult }) => {
-          recordClosedTrade(position, exitPrice, pnl, { profit: pnl, nnSlPct, nnTpR, nnSizeMult });
-          removePosition(position.id);
-          persistNow();
-          emit();
-        },
-      });
-      if (pendingBatch.length > 0 && getRemoteServerUrl()) {
-        postExecutionLogAppend(pendingBatch as unknown as import('../core/api').ExecutionLogEventPayload[]).catch(() => {});
-      }
-    },
+    // Stage 2B: tickBotExecution and tickPositionEvaluation removed.
+    // The backend ExecutionDaemon owns the trade loop now — see
+    // python/cicada_nn/execution_daemon.py. The frontend's only job is
+    // to deploy/stop bots through /daemon/* and display the resulting
+    // events from the SSE bus + /orders + /sl_tp_events. No more
+    // browser-side per-tick predict/risk/order pipeline.
     clearBotExecutionLog() {
       botExecutionLog = [];
       emit();

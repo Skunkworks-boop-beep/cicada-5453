@@ -194,3 +194,38 @@ def test_session_tagged_to_clock_hour(tmp_path: Path):
     mon = LatencyMonitor(store=s, health_check=lambda: None, clock=clock)
     row = mon.sample_once()
     assert row.market_session == "LONDON_NY_OVERLAP"
+
+
+# ── Stage 2B fix B: env-gate predicate ───────────────────────────────────
+#
+# The predicate lives in ``latency_monitor.latency_monitor_enabled`` rather
+# than inline in api.py so these tests can probe it without importing the
+# api module (which transitively pulls torch via train.py and would skip the
+# whole test file in any minimal venv). Architectural review §3.2.
+
+
+from cicada_nn.latency_monitor import latency_monitor_enabled  # noqa: E402
+
+
+def test_env_gate_default_on_when_unset(monkeypatch):
+    monkeypatch.delenv("CICADA_LATENCY_MONITOR", raising=False)
+    assert latency_monitor_enabled() is True
+
+
+def test_env_gate_default_on_when_explicitly_one(monkeypatch):
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", "1")
+    assert latency_monitor_enabled() is True
+
+
+@pytest.mark.parametrize("val", ["0", "false", "FALSE", "no", "NO", "off", " 0 "])
+def test_env_gate_disabled_when_explicitly_off(monkeypatch, val: str):
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", val)
+    assert latency_monitor_enabled() is False
+
+
+def test_env_gate_treats_garbage_as_on(monkeypatch):
+    """Anything that's not in the explicit off-set defaults to enabled —
+    we'd rather start the monitor unnecessarily than miss it because of a
+    typo. Production observability beats developer convenience."""
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", "maybe")
+    assert latency_monitor_enabled() is True

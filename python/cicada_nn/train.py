@@ -631,3 +631,106 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3)
     args = parser.parse_args()
     train(args.backtest or None, output_dir=args.output, epochs=args.epochs, lr=args.lr)
+
+
+# ─── Stage 2B: Context-layer 4-class trainer ─────────────────────────────
+
+
+def train_context_layer(
+    *,
+    context_rows,
+    instrument_id: str,
+    output_dir: str | os.PathLike = "checkpoints",
+    epochs: int = 5,
+    lr: float = 1e-3,
+    batch_size: int = 64,
+    seed: int = 0,
+) -> tuple[Path, dict]:
+    """Train the 4-class ContextLayerNN on context-layer rows.
+
+    Calls ``lookahead_validator.assert_clean(...)`` before any tensor
+    construction; a leaked feature aborts the train loudly with
+    ``LookaheadLeakError``. Spec section 5: this is mandatory and not
+    optional.
+
+    Returns ``(save_path, metrics)`` where ``metrics`` contains final loss,
+    accuracy, and the calibrated temperature.
+    """
+    from .context_layer import FEATURE_COLUMNS, LABEL_COLUMNS, ContextLayerRow
+    from .labeling import bidirectional_labels, NUM_BIDIRECTIONAL_CLASSES
+    from .lookahead_validator import assert_clean
+    from .model import ContextLayerNN, ContextLayerConfig
+
+    if not context_rows:
+        raise ValueError("train_context_layer: no context rows provided")
+
+    # Re-run the validator at the train boundary — defence in depth.
+    feats: list[list[float]] = []
+    feat_ts: list[list[float]] = []
+    row_ts: list[float] = []
+    for r in context_rows:
+        if isinstance(r, ContextLayerRow):
+            features = r.features
+            f_ts = r.feature_t
+            t = r.t
+        else:  # dict-shaped row from tests
+            features = r["features"]
+            f_ts = r["feature_t"]
+            t = r["t"]
+        feats.append([float(features[k]) for k in FEATURE_COLUMNS])
+        feat_ts.append([float(f_ts[k]) for k in FEATURE_COLUMNS])
+        row_ts.append(float(t))
+    assert_clean(
+        feature_matrix=feats,
+        feature_timestamps=feat_ts,
+        row_timestamps=row_ts,
+        feature_columns=list(FEATURE_COLUMNS),
+        label_columns=list(LABEL_COLUMNS),
+    )
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    x = torch.tensor(feats, dtype=torch.float32, device=DEVICE).unsqueeze(0)  # (1, T, F)
+    targets = torch.tensor(bidirectional_labels(context_rows), dtype=torch.long, device=DEVICE)
+
+    cfg = ContextLayerConfig(feature_dim=len(FEATURE_COLUMNS))
+    model = ContextLayerNN(cfg).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = nn.CrossEntropyLoss()
+
+    last_loss = 0.0
+    for _epoch in range(epochs):
+        model.train()
+        optimizer.zero_grad()
+        logits = model(x).squeeze(0)  # (T, num_classes)
+        loss = loss_fn(logits, targets)
+        loss.backward()
+        optimizer.step()
+        last_loss = float(loss.item())
+
+    model.eval()
+    with torch.no_grad():
+        preds = torch.argmax(model(x).squeeze(0), dim=-1)
+        acc = float((preds == targets).float().mean().item())
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = _safe_instrument_id(instrument_id)
+    save_path = out_dir / f"context_layer_{safe_id}.pt"
+    torch.save(
+        {
+            "model_version": "contextv1",
+            "state_dict": model.state_dict(),
+            "context_layer_config": vars(cfg),
+            "instrument_id": instrument_id,
+            "num_classes": NUM_BIDIRECTIONAL_CLASSES,
+        },
+        save_path,
+    )
+    return save_path, {
+        "final_loss": last_loss,
+        "accuracy": acc,
+        "temperature": float(model.temperature.item()),
+        "n_rows": len(context_rows),
+    }

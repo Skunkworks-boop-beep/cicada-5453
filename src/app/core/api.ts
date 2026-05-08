@@ -1445,3 +1445,59 @@ export async function getLatencyBaseline(): Promise<LatencyBaseline | null> {
   }
 }
 
+
+// ── Stage 2B: analytical-core endpoints ──────────────────────────────────
+
+export interface GeometricMapVolumeNode {
+  price: number;
+  score: number;
+}
+
+export interface GeometricMapSwingPoint {
+  idx: number;
+  time: number;
+  price: number;
+}
+
+export interface GeometricMapSRLevel {
+  price: number;
+  kind: 'support' | 'resistance';
+  confirmations: number;
+  score: number;
+}
+
+export interface GeometricMapMeta {
+  version: number;
+  symbol: string;
+  n_bars: number;
+  bar_first_time: number;
+  bar_last_time: number;
+  atr_at_build: number;
+  input_sha: string;
+}
+
+export interface GeometricMap {
+  symbol: string;
+  bins: number[];
+  volume_nodes: GeometricMapVolumeNode[];
+  swing_highs: GeometricMapSwingPoint[];
+  swing_lows: GeometricMapSwingPoint[];
+  support_levels: GeometricMapSRLevel[];
+  resistance_levels: GeometricMapSRLevel[];
+  meta: GeometricMapMeta;
+}
+
+/** Fetch the latest persisted geometric map for a symbol. ``null`` on 404 so the
+ * dashboard panel can show ``[ NO MAP — RUN BUILD ]`` without throwing. */
+export async function getGeometricMap(symbol: string): Promise<GeometricMap | null> {
+  try {
+    const res = await fetch(`${getNnApiBaseUrl()}/map/geometric/${encodeURIComponent(symbol)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as GeometricMap;
+  } catch {
+    return null;
+  }
+}
+

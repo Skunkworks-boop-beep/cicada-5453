@@ -539,19 +539,22 @@ def daemon_sl_event(
 # ── Lifecycle ──────────────────────────────────────────────────────────────
 
 def _auto_daemon_enabled() -> bool:
-    """Backend daemon is opt-in until all broker bar/order paths are server-side.
+    """Backend daemon is the canonical owner of the live trade loop.
 
-    The browser loop already handles Deriv/eXness/MT5 data paths. Auto-starting
-    the backend daemon for a Deriv bot currently starves it of bars (MT5-only
-    provider), making the UI wait forever. Operators can still opt in explicitly
-    with CICADA_ENABLE_EXECUTION_DAEMON=1 for backend-owned experiments.
+    Stage 2B+ took the position that the spec-aligned backend ExecutionDaemon
+    owns trading: per-mode validation (bug 3), append-only order records
+    (bug 4), SL/TP lifecycle (bug 2), min-hold gate (bug 1), latency gates
+    (Stage 2A checks 6/7), and the geometric / execution-quality / fakeout
+    pipeline (Stage 2B) all live here. The browser-side ``runBotExecution``
+    loop has been removed; there is no longer a parallel path.
+
+    Default ON. ``CICADA_DISABLE_EXECUTION_DAEMON=1`` is an emergency
+    kill switch for ops (e.g. running just the API for inspection without
+    spawning daemon threads). When disabled, deployed bots simply do not
+    trade — there is no fallback.
     """
-    return (os.environ.get("CICADA_ENABLE_EXECUTION_DAEMON") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    raw = (os.environ.get("CICADA_DISABLE_EXECUTION_DAEMON") or "").strip().lower()
+    return raw not in {"1", "true", "yes", "on"}
 
 
 _DAEMON: Optional[ExecutionDaemon] = None

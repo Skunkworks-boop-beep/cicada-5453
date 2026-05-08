@@ -39,3 +39,18 @@ npm-debug.log*
 
 # Vite / frontend build output (root dist if build artifact)
 /dist
+
+# Runtime artefacts: lock files + sqlite scratch live alongside checkpointed
+# JSON/PT files; the JSON files are tracked deliberately, the sqlite + locks
+# are local state only.
+python/checkpoints/*.sqlite
+python/checkpoints/*.sqlite-*
+python/checkpoints/*.lock
+python/checkpoints/jobs.json
+python/checkpoints/maps/
+python/checkpoints/context_layer/
+
+# Top-level checkpoints/ is the scratch directory created when api.py boots
+# with the default CICADA_NN_CHECKPOINTS=checkpoints (cwd-relative). Tests
+# write maps + sqlite here. Never tracked.
+/checkpoints/

@@ -199,7 +199,7 @@ See [docs/SETUP_REMOTE.md](docs/SETUP_REMOTE.md) for full details. If the app ca
 
 ## Brokers (after setup)
 
-- **Demo mode:** No backend or brokers needed. Check "Continue without MT5" on login.
+- **Live only:** Demo mode was removed in Stage 2B. The backend + MT5 bridge must be running for login to succeed.
 - **Deriv:** App ID + token from [api.deriv.com](https://api.deriv.com)
 - **eXness:** API key from Personal Area → API; MT5 add-on for OHLC
 - **MT5:** Login credentials; requires MT5 terminal on the backend machine (Windows/Linux)

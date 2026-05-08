@@ -196,12 +196,65 @@ def uniqueness_weights(
 
 
 def label_distribution(labels: np.ndarray) -> dict[str, float]:
-    """Convenience: fraction of each class for log summaries."""
+    """Convenience: fraction of each class for log summaries.
+
+    Auto-detects whether the input uses the 3-class triple-barrier scheme
+    ({0,1,2}) or the Stage 2B 4-class scheme ({0,1,2,3} with FAKEOUT_REVERSAL).
+    Keys for the 3-class path stay backward-compatible.
+    """
     if labels.size == 0:
         return {"short": 0.0, "long": 0.0, "neutral": 0.0}
+    max_label = int(labels.max())
     total = float(labels.size)
+    if max_label >= 3:
+        return {
+            "long": float((labels == LABEL_LONG).sum()) / total,
+            "short": float((labels == LABEL_SHORT).sum()) / total,
+            "neutral": float((labels == LABEL_NEUTRAL).sum()) / total,
+            "fakeout_reversal": float((labels == LABEL_FAKEOUT_REVERSAL).sum()) / total,
+        }
     return {
         "short": float((labels == 0).sum()) / total,
         "long": float((labels == 1).sum()) / total,
         "neutral": float((labels == 2).sum()) / total,
     }
+
+
+# ── Stage 2B: 4-class bidirectional labels ───────────────────────────────
+#
+# Spec phase 7: NN head becomes a 4-class softmax.
+#   0 = LONG
+#   1 = SHORT
+#   2 = NEUTRAL
+#   3 = FAKEOUT_REVERSAL
+# These are *event* labels emitted by the context layer, distinct from the
+# strategy-side ``pa-fakeout`` ID. Existing 3-class triple_barrier_labels
+# stays in place for backward compatibility with V1/V2 detection models.
+
+LABEL_LONG = 0
+LABEL_SHORT = 1
+LABEL_NEUTRAL = 2
+LABEL_FAKEOUT_REVERSAL = 3
+NUM_BIDIRECTIONAL_CLASSES = 4
+
+
+def bidirectional_labels(context_rows: Sequence) -> np.ndarray:
+    """Convert ``context_layer.ContextLayerRow`` objects to a class-index
+    array in {0,1,2,3}. Robust to both real ContextLayerRow instances and
+    simple dicts so unit tests can pass dicts.
+
+    The mapping is: FAKEOUT_REVERSAL > LONG > SHORT > NEUTRAL — first hit
+    wins so the rare events aren't masked by a co-fired NEUTRAL flag.
+    """
+    out = np.full(len(context_rows), LABEL_NEUTRAL, dtype=np.int64)
+    for i, row in enumerate(context_rows):
+        labels = getattr(row, "labels", None) or row.get("labels", {})
+        if float(labels.get("FAKEOUT_REVERSAL", 0.0)) > 0.0:
+            out[i] = LABEL_FAKEOUT_REVERSAL
+        elif float(labels.get("LONG", 0.0)) > 0.0:
+            out[i] = LABEL_LONG
+        elif float(labels.get("SHORT", 0.0)) > 0.0:
+            out[i] = LABEL_SHORT
+        else:
+            out[i] = LABEL_NEUTRAL
+    return out

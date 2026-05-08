@@ -94,24 +94,30 @@ def connect(
 
 
 def get_account() -> dict | None:
-    """Account snapshot. The bridge's ``/health`` returns only login; richer
-    fields await a future ``/account`` endpoint. Returns ``None`` if the
-    bridge is unreachable or MT5 isn't connected inside the VM."""
+    """Account snapshot. Stage 2B fix C (review §3.4): proxies the bridge's
+    ``GET /account`` so balance/equity/currency are real values, not
+    placeholder zeros. Returns ``None`` when the bridge is unreachable or
+    MT5 isn't logged in inside the VM."""
     try:
-        h = get_bridge().health_check()
+        info = get_bridge().get_account()
     except BridgeError:
         return None
-    if not h.get("mt5_connected"):
+    if not isinstance(info, dict) or not info.get("login"):
         return None
+    # Mirror the legacy field set so existing callers don't break, but
+    # surface the real numbers from MT5 instead of placeholder zeros.
     return {
-        "login": h.get("account") or "",
-        "server": "",
-        "balance": 0.0,
-        "equity": 0.0,
-        "currency": "",
-        "leverage": 0,
-        "trade_allowed": True,
-        "company": "",
+        "login": str(info.get("login") or ""),
+        "server": str(info.get("server") or ""),
+        "balance": float(info.get("balance") or 0.0),
+        "equity": float(info.get("equity") or 0.0),
+        "currency": str(info.get("currency") or ""),
+        "leverage": int(info.get("leverage") or 0),
+        "margin": float(info.get("margin") or 0.0),
+        "margin_free": float(info.get("margin_free") or 0.0),
+        "profit": float(info.get("profit") or 0.0),
+        "trade_allowed": bool(info.get("trade_allowed", True)),
+        "company": str(info.get("company") or ""),
     }
 
 
@@ -178,18 +184,43 @@ def connection_status() -> dict[str, Any]:
             "last_error": "MT5 not connected inside VM",
             "has_credentials": bool(_LAST_CREDS),
         }
+    # Stage 2B fix C: pull the real account snapshot from /account so the
+    # dashboard's brokers panel shows real balance/equity instead of
+    # placeholder zeros. Failure here is non-fatal — fall back to the
+    # account login from /health.
+    real_balance = 0.0
+    real_equity = 0.0
+    real_server = ""
+    real_currency = ""
+    real_leverage = 0
+    real_company = ""
+    real_login = h.get("account")
+    real_trade_allowed = True
+    try:
+        info = get_bridge().get_account()
+        if isinstance(info, dict) and info.get("login"):
+            real_balance = float(info.get("balance") or 0.0)
+            real_equity = float(info.get("equity") or 0.0)
+            real_server = str(info.get("server") or "")
+            real_currency = str(info.get("currency") or "")
+            real_leverage = int(info.get("leverage") or 0)
+            real_company = str(info.get("company") or "")
+            real_login = str(info.get("login") or h.get("account") or "")
+            real_trade_allowed = bool(info.get("trade_allowed", True))
+    except BridgeError:
+        pass  # /account is best-effort; /health already confirmed connectivity
     return {
         "installed": True,
         "connected": True,
         "bridge_reachable": True,
-        "login": h.get("account"),
-        "server": "",
-        "currency": "",
-        "leverage": 0,
-        "balance": 0.0,
-        "equity": 0.0,
-        "trade_allowed": True,
-        "company": "",
+        "login": real_login,
+        "server": real_server,
+        "currency": real_currency,
+        "leverage": real_leverage,
+        "balance": real_balance,
+        "equity": real_equity,
+        "trade_allowed": real_trade_allowed,
+        "company": real_company,
     }
 
 

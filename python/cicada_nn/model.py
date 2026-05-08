@@ -516,3 +516,74 @@ def build_detection_model_from_checkpoint(checkpoint: dict) -> StrategyDetection
         dropout=dropout,
     )
     return StrategyDetectionNN(cfg)
+
+
+# ─── Stage 2B: Context-layer 4-class NN ──────────────────────────────────
+
+
+@dataclass
+class ContextLayerConfig:
+    """Spec phase 7: LSTM 64u + linear head → 4-class softmax."""
+    feature_dim: int = 12        # FEATURE_COLUMNS in context_layer
+    hidden_dim: int = 64
+    num_layers: int = 1
+    num_classes: int = 4         # LONG / SHORT / NEUTRAL / FAKEOUT_REVERSAL
+    dropout: float = 0.1
+
+
+class ContextLayerNN(nn.Module):
+    """LSTM-based classifier over the context layer.
+
+    Input shape: (B, T, F) where F == feature_dim. The network's job is to
+    emit per-row class logits — the context-layer events the spec asks the
+    bot to predict (LONG/SHORT/NEUTRAL/FAKEOUT_REVERSAL).
+
+    Calibration follows the same pattern as ``StrategyDetectionNN``: a
+    learnable scalar temperature applied at inference time.
+    """
+
+    def __init__(self, config: Optional[ContextLayerConfig] = None):
+        super().__init__()
+        self.config = config or ContextLayerConfig()
+        cfg = self.config
+        self.lstm = nn.LSTM(
+            input_size=cfg.feature_dim,
+            hidden_size=cfg.hidden_dim,
+            num_layers=cfg.num_layers,
+            batch_first=True,
+            dropout=cfg.dropout if cfg.num_layers > 1 else 0.0,
+        )
+        self.dropout = nn.Dropout(cfg.dropout)
+        self.head = nn.Linear(cfg.hidden_dim, cfg.num_classes)
+        # Temperature is initialised to 1.0; trainer can fit it post-hoc.
+        self.log_temperature = nn.Parameter(torch.zeros(1))
+
+    @property
+    def temperature(self) -> torch.Tensor:
+        return torch.exp(self.log_temperature).clamp(min=0.05, max=20.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return per-row logits of shape (B, T, num_classes)."""
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        out, _ = self.lstm(x)
+        out = self.dropout(out)
+        logits = self.head(out)
+        return logits / self.temperature
+
+    def predict_classes(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            logits = self.forward(x)
+            return torch.argmax(logits, dim=-1)
+
+
+def build_context_layer_model(config: Optional[ContextLayerConfig] = None) -> ContextLayerNN:
+    """Build a fresh 4-class context-layer NN with the spec defaults."""
+    return ContextLayerNN(config)
+
+
+def build_context_layer_model_from_checkpoint(checkpoint: dict) -> ContextLayerNN:
+    cfg_dict = checkpoint.get("context_layer_config") or {}
+    valid = {k: v for k, v in cfg_dict.items() if k in ContextLayerConfig.__dataclass_fields__}
+    cfg = ContextLayerConfig(**valid)
+    return ContextLayerNN(cfg)

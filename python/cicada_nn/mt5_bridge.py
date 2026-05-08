@@ -14,6 +14,8 @@ trades through a dead bridge is a worse failure than visibly halting.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from urllib.error import URLError
@@ -23,6 +25,22 @@ import json
 
 DEFAULT_BASE_URL = os.environ.get("CICADA_BRIDGE_URL", "http://localhost:5000")
 DEFAULT_TIMEOUT_S = float(os.environ.get("CICADA_BRIDGE_TIMEOUT_S", "5.0"))
+
+# Stage 2B fix A (architectural review §3.1): cache the reachability probe
+# for a short TTL so daemon hot-paths (``mt5_client.is_connected`` /
+# ``MT5_AVAILABLE``) don't pay an HTTP roundtrip on every access. With a
+# 5s TTL the daemon ticks at scope intervals (15-120s) pay at most ONE
+# bridge probe per 5-second window instead of N probes per tick.
+_REACHABLE_TTL_S = float(os.environ.get("CICADA_BRIDGE_REACHABLE_TTL_S", "5.0"))
+_REACHABLE_LOCK = threading.Lock()
+_REACHABLE_CACHE: dict[str, Any] = {"ok": None, "expires": 0.0}
+
+
+def _reachable_cache_clear() -> None:
+    """Reset the reachability cache (used by tests to bypass TTL)."""
+    with _REACHABLE_LOCK:
+        _REACHABLE_CACHE["ok"] = None
+        _REACHABLE_CACHE["expires"] = 0.0
 
 
 class BridgeError(Exception):
@@ -81,6 +99,12 @@ class MT5Bridge:
 
     def health_check(self) -> dict:
         return self.http("GET", f"{self.base_url}/health", None, self.timeout_s)
+
+    def get_account(self) -> dict:
+        """Stage 2B fix C: full account snapshot from the bridge's
+        ``GET /account``. Raises ``BridgeError`` when MT5 isn't connected
+        inside the VM (the bridge returns 503 in that case)."""
+        return self.http("GET", f"{self.base_url}/account", None, self.timeout_s)
 
     def place_order(
         self,
@@ -170,17 +194,34 @@ def get_bridge() -> MT5Bridge:
 
 
 def set_bridge(bridge: Optional[MT5Bridge]) -> None:
-    """Inject a bridge (typically from tests). ``None`` resets to default."""
+    """Inject a bridge (typically from tests). ``None`` resets to default.
+    Also clears the reachability cache so a freshly-injected bridge is
+    probed on the next ``is_reachable`` call regardless of TTL."""
     global _BRIDGE
     _BRIDGE = bridge
+    _reachable_cache_clear()
 
 
 def is_reachable(timeout_s: float = 1.0) -> bool:
-    """Cheap probe used by the UI's connection pill and the daemon's startup."""
+    """Cheap probe used by the UI's connection pill and the daemon's startup.
+
+    Stage 2B fix A: the result is cached for ``_REACHABLE_TTL_S`` seconds
+    (5s by default) so the daemon's hot path doesn't pay a network round-
+    trip on every access. The cache lives in module state guarded by a
+    lock so concurrent callers see consistent results."""
+    now = time.time()
+    with _REACHABLE_LOCK:
+        cached_ok = _REACHABLE_CACHE.get("ok")
+        if cached_ok is not None and now < float(_REACHABLE_CACHE.get("expires") or 0.0):
+            return bool(cached_ok)
     bridge = get_bridge()
     try:
         bridge.timeout_s = timeout_s
         bridge.health_check()
-        return True
+        ok = True
     except BridgeError:
-        return False
+        ok = False
+    with _REACHABLE_LOCK:
+        _REACHABLE_CACHE["ok"] = ok
+        _REACHABLE_CACHE["expires"] = now + _REACHABLE_TTL_S
+    return ok

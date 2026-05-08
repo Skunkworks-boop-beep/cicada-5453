@@ -6,16 +6,14 @@ This guide walks you through a **complete setup** of the trading dashboard: fron
 
 ## 1. Do I need the backend?
 
-| What you do | Backend required? |
-|-------------|-------------------|
-| **Login (demo mode)** | No |
-| **Backtest** | **No** — runs in the browser. **Requires** Deriv or MT5 connected (no synthetic fallback). Uses real OHLC from Deriv (frontend) or MT5 (backend) when brokers are connected. |
-| **Connect Deriv** | No — frontend talks to Deriv WebSocket directly. |
-| **Connect eXness (MT5)** | **Yes** — the Python backend connects to MetaTrader 5. |
-| **Bot Build (train NN)** | **Yes** — the Python backend runs PyTorch training. |
-| **MT5_CONNECTION status / real MT5 OHLC** | **Yes** — backend must be running and MT5 connected. |
+| What you do | Backend + bridge required? |
+|-------------|-----------------------------|
+| **Login** | **Yes** — MT5 authentication routes through the bridge inside a Windows VM. |
+| **Backtest** | **Yes** — historical bars come from MT5 via the bridge's `GET /history`. |
+| **Bot Build (train NN)** | **Yes** — PyTorch training runs on the backend. |
+| **Live trading (Execution Daemon)** | **Yes** — the backend daemon owns the trade loop and routes orders through the bridge. |
 
-**Summary:** You can run the app with **frontend only** (demo mode, Deriv if you connect it). **Backtest requires a broker** (Deriv or MT5); connect one before running. Start the **backend** when you need MT5 (eXness) or **Bot Build**. **Portfolio P/L and balance** are not simulated: they start empty and show real data only after you connect MT5 (balance from account) or when live positions are available.
+**Summary:** Live-only pipeline as of Stage 2B. Both the FastAPI backend (`uvicorn cicada_nn.api`) and the MT5 bridge inside the Windows VM (`bridge.server` on `localhost:5000`) are mandatory. Demo mode has been removed; there is no browser-only path.
 
 ---
 
@@ -100,8 +98,7 @@ VITE_NN_API_URL=http://localhost:8000
 ### 4.4 Login
 
 1. Open the app (e.g. `http://localhost:5173`).
-2. **Demo mode:** Check **“Continue without MT5 (demo mode)”** → **INITIATE SECURE ACCESS**. No backend or credentials needed.
-3. **MT5 (eXness):** Enter Login, Password, Server → submit. The frontend calls the backend `POST /mt5/connect`; the backend must be running and MT5 installed (Windows/Linux) for connection to succeed.
+2. **MT5 login:** Enter Login, Password, Server → submit. The frontend calls the backend's `POST /mt5/connect`, which routes through the bridge to authenticate inside the Windows VM. Backend + bridge must be running for this to succeed; there is no demo path.
 
 ### 4.5 Brokers (dashboard)
 

@@ -4,16 +4,31 @@ Algorithmic trading dashboard: backtest 200+ strategies across instruments (fore
 
 ---
 
-## Quick start (frontend only)
+## Quick start
 
-You can run the app and use **demo mode** without any backend or broker accounts.
+The system is **live-only** as of Stage 2B — no demo mode, no synthetic data, no
+mock fallbacks. To run the app you need:
+
+1. The Python FastAPI backend (`uvicorn cicada_nn.api`)
+2. The MT5 bridge running inside a Windows VM at `localhost:5000`
+3. A funded or demo broker account that the VM's MT5 logs into on boot
+
+The dashboard requires real MT5 authentication routed through the bridge. If
+the backend or bridge is unreachable, login fails and the operator stays on the
+login screen — by design. See [bridge/README.md](bridge/README.md) for the
+one-time VM setup.
 
 ```bash
+# Frontend
 npm install
 npm run dev
+
+# Backend (separate terminal)
+cd python && uvicorn cicada_nn.api:app --host 0.0.0.0 --port 8000
 ```
 
-Open the URL shown (e.g. `http://localhost:5173`). On the login page, check **“Continue without MT5 (demo mode)”** and click **INITIATE SECURE ACCESS**. You’ll land on the dashboard with instruments, strategies, backtest, bots, and portfolio (simulated).
+Then log in with your MT5 account number, password, and broker server name on
+the login page.
 
 ---
 
@@ -64,7 +79,7 @@ npm run dev
 Used for:
 
 - **Bot build** — trains the PyTorch NN from backtest results when you click Rebuild in Bot Builder.
-- **MT5 connection** — login-page credentials (when not in demo mode) are sent here to connect to your MT5 account.
+- **MT5 connection** — login-page credentials are sent here to connect to your MT5 account via the bridge.
 
 ```bash
 cd python
@@ -94,8 +109,7 @@ VITE_NN_API_URL=http://localhost:8000
 
 ### 5. Login
 
-- **Demo mode** — Check “Continue without MT5 (demo mode)” and submit. No credentials or backend required; you go straight to the dashboard.
-- **MT5 add-on** — Enter MT5 account number (User identifier), password (Pass key), and optionally Server. Leave demo mode unchecked and submit. The frontend calls the backend’s `/mt5/connect`; if the Python server and MT5 are set up, the backend connects to your MT5 account.
+- **MT5 (only mode)** — Enter MT5 account number (User identifier), password (Pass key), and broker Server name. The frontend calls the backend's `/mt5/connect`, which routes through the bridge to authenticate inside the Windows VM. Demo mode has been removed; the dashboard does not load without a successful authentication.
 
 ### 6. Brokers (dashboard)
 
@@ -112,7 +126,7 @@ After login, open the **[ BROKERS ]** section on the dashboard. **Full live-acco
 
 ### 7. Typical workflow
 
-1. **Login** — Demo or MT5.
+1. **Login** — MT5 only (live or broker-demo account; no app-level demo mode).
 2. **Brokers** — Connect Deriv and/or MT5 add-on (or eXness API) as needed.
 3. **Instruments** — Toggle active/inactive; each instrument is tied to a broker (Deriv, MT5, or eXness API).
 4. **Strategies** — Enable/disable from the strategy library.
@@ -161,4 +175,4 @@ npm run dev
 cd python && pip install -r requirements.txt && uvicorn cicada_nn.api:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Then open the dev server URL, use **demo mode** or MT5 login, and configure brokers on the dashboard as needed.
+Then open the dev server URL, log in with your MT5 credentials, and configure brokers on the dashboard as needed. The backend and bridge must be reachable for the dashboard to load — no demo path exists.
