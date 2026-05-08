@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { CicadaLogo } from '../components/CicadaLogo';
-import { CicadaCheckbox } from '../components/CicadaCheckbox';
 import { Lock, User, Server } from 'lucide-react';
 import { postMt5Connect } from '../core/api';
 import { useTradingStore } from '../store/TradingStore';
@@ -16,7 +15,11 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<'username' | 'password' | 'server' | null>(null);
-  const [demoMode, setDemoMode] = useState(false);
+  // Stage 2B: demo mode is gone. The dashboard requires a real MT5 login
+  // routed through the bridge — there is no synthetic / mock path. If the
+  // backend or bridge is unreachable, login fails and the operator stays
+  // on this screen. This is intentional: "no demos, just the full product
+  // use pipeline".
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
 
@@ -73,10 +76,6 @@ export default function Login() {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
-    if (demoMode) {
-      setTimeout(() => navigate('/dashboard'), 800);
-      return;
-    }
     try {
       const res = await postMt5Connect(username, password, server);
       if (res.connected && res.account) {
@@ -193,8 +192,7 @@ export default function Login() {
                       onFocus={() => setFocusedField('username')}
                       onBlur={() => setFocusedField(null)}
                       placeholder="MT5 account number..."
-                      required={!demoMode}
-                      disabled={demoMode}
+                      required
                     />
                   </div>
 
@@ -219,8 +217,7 @@ export default function Login() {
                       onFocus={() => setFocusedField('password')}
                       onBlur={() => setFocusedField(null)}
                       placeholder="enter_cipher_key..."
-                      required={!demoMode}
-                      disabled={demoMode}
+                      required
                     />
                   </div>
 
@@ -245,7 +242,6 @@ export default function Login() {
                       onFocus={() => setFocusedField('server')}
                       onBlur={() => setFocusedField(null)}
                       placeholder="Broker-Server or leave empty"
-                      disabled={demoMode}
                     />
                   </div>
 
@@ -254,14 +250,6 @@ export default function Login() {
                       {error}
                     </div>
                   )}
-
-                  {/* Skip MT5 and enter dashboard */}
-                  <CicadaCheckbox
-                    checked={demoMode}
-                    onChange={(v) => { setDemoMode(v); setError(null); }}
-                    label="Continue without MT5"
-                    size="sm"
-                  />
 
                   {/* Submit */}
                   <button

@@ -107,7 +107,7 @@ cd python && source venv/bin/activate && uvicorn cicada_nn.api:app --reload --ho
 ```
 → `http://localhost:8000`
 
-**Login:** Check "Continue without MT5 (demo mode)" for quick access.
+**Login:** Enter your MT5 account number, password, and broker server name. The dashboard will not load without a successful authentication routed through the bridge — demo mode has been removed (Stage 2B).
 
 ---
 
@@ -204,10 +204,11 @@ VITE_NN_API_URL=http://localhost:8000
 
 | Broker | Purpose | Setup |
 |--------|---------|-------|
-| **Demo mode** | No backend or brokers | Check "Continue without MT5" on login |
-| **Deriv** | Synthetic indices | App ID from [api.deriv.com](https://api.deriv.com) + Personal Access Token |
-| **eXness API** | Account, positions | API key from Personal Area → API |
-| **MT5 add-on** | OHLC for forex/crypto | MT5 terminal on backend machine (Windows/Linux) |
+| **MT5 (via bridge)** | Live OHLC, ticks, orders, positions | MT5 terminal in a Windows VM with the bridge FastAPI service on `localhost:5000` |
+
+> Stage 2B removed demo mode and consolidated execution onto the MT5 bridge.
+> Deriv / eXness data paths still ship for backward compatibility but are not
+> the spec-aligned live path.
 
 **Brokers panel:** Dashboard → [ BROKERS ] — connect each broker. For OHLC from eXness instruments, connect the MT5 add-on (eXness uses MT5 for market data).
 

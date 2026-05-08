@@ -137,11 +137,12 @@ def _bootstrap_daemon():
         # localhost:5000/health every 30s and writes latency_log rows that
         # the per-mode trade gate reads on every order.
         #
-        # Stage 2B fix B: gate on CICADA_LATENCY_MONITOR. Default ON for
-        # production; tests / REPL inspection set it to "0" so importing
-        # ``cicada_nn.api`` and running ``_bootstrap_daemon`` does not
-        # spawn a daemon thread polling localhost. Architectural review §3.2.
-        if (os.environ.get("CICADA_LATENCY_MONITOR", "1") or "1").lower() not in ("0", "false", "no"):
+        # Stage 2B fix B: gate on CICADA_LATENCY_MONITOR via the predicate
+        # in latency_monitor.latency_monitor_enabled() — kept there so tests
+        # can probe it without importing this module (which pulls torch).
+        # Architectural review §3.2.
+        from .latency_monitor import latency_monitor_enabled
+        if latency_monitor_enabled():
             try:
                 LATENCY_MONITOR.start()
             except Exception:

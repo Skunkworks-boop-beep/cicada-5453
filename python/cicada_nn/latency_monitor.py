@@ -19,6 +19,7 @@ by the trading engine, so a stuck monitor cannot stall trades.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -32,6 +33,20 @@ from .mt5_bridge import BridgeError
 
 
 logger = logging.getLogger(__name__)
+
+
+# ── Env gate (Stage 2B fix B + test-isolation refactor) ──────────────────
+
+
+def latency_monitor_enabled() -> bool:
+    """Whether ``api._bootstrap_daemon`` should ``LATENCY_MONITOR.start()``.
+
+    Default ON for production; ``CICADA_LATENCY_MONITOR=0`` (or false / no /
+    off) skips the daemon thread. Lives here rather than inline in api.py
+    so tests can probe the predicate without importing the api module
+    (which transitively imports torch via train.py)."""
+    raw = (os.environ.get("CICADA_LATENCY_MONITOR") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 # ── Market sessions (UTC hour windows) ───────────────────────────────────

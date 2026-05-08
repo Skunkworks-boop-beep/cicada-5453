@@ -196,33 +196,36 @@ def test_session_tagged_to_clock_hour(tmp_path: Path):
     assert row.market_session == "LONDON_NY_OVERLAP"
 
 
-# ── Stage 2B fix B: env-gate ─────────────────────────────────────────────
+# ── Stage 2B fix B: env-gate predicate ───────────────────────────────────
+#
+# The predicate lives in ``latency_monitor.latency_monitor_enabled`` rather
+# than inline in api.py so these tests can probe it without importing the
+# api module (which transitively pulls torch via train.py and would skip the
+# whole test file in any minimal venv). Architectural review §3.2.
 
 
-def test_bootstrap_daemon_skips_monitor_when_env_disabled(monkeypatch):
-    """Architectural review §3.2: importing ``cicada_nn.api`` must not spawn
-    a daemon thread when ``CICADA_LATENCY_MONITOR=0``. The thread default is
-    ON for production; this test pins the test/REPL escape hatch."""
-    monkeypatch.setenv("CICADA_LATENCY_MONITOR", "0")
-    # Import inside the test so the env var is honoured at startup-hook time.
-    import importlib
-
-    import cicada_nn.api as api  # noqa: WPS433
-    importlib.reload(api)
-    api.LATENCY_MONITOR.stop()  # belt-and-braces in case a prior test started it
-    api._bootstrap_daemon()
-    assert api.LATENCY_MONITOR._thread is None or not api.LATENCY_MONITOR._thread.is_alive()
+from cicada_nn.latency_monitor import latency_monitor_enabled  # noqa: E402
 
 
-def test_bootstrap_daemon_starts_monitor_by_default(monkeypatch):
+def test_env_gate_default_on_when_unset(monkeypatch):
+    monkeypatch.delenv("CICADA_LATENCY_MONITOR", raising=False)
+    assert latency_monitor_enabled() is True
+
+
+def test_env_gate_default_on_when_explicitly_one(monkeypatch):
     monkeypatch.setenv("CICADA_LATENCY_MONITOR", "1")
-    import importlib
+    assert latency_monitor_enabled() is True
 
-    import cicada_nn.api as api  # noqa: WPS433
-    importlib.reload(api)
-    api._bootstrap_daemon()
-    try:
-        assert api.LATENCY_MONITOR._thread is not None
-        assert api.LATENCY_MONITOR._thread.is_alive()
-    finally:
-        api.LATENCY_MONITOR.stop()
+
+@pytest.mark.parametrize("val", ["0", "false", "FALSE", "no", "NO", "off", " 0 "])
+def test_env_gate_disabled_when_explicitly_off(monkeypatch, val: str):
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", val)
+    assert latency_monitor_enabled() is False
+
+
+def test_env_gate_treats_garbage_as_on(monkeypatch):
+    """Anything that's not in the explicit off-set defaults to enabled —
+    we'd rather start the monitor unnecessarily than miss it because of a
+    typo. Production observability beats developer convenience."""
+    monkeypatch.setenv("CICADA_LATENCY_MONITOR", "maybe")
+    assert latency_monitor_enabled() is True
