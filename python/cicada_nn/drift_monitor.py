@@ -359,32 +359,48 @@ class DriftMonitor:
         Many fields (volatility, drawdown, error baseline) are not yet
         plumbed through to a queryable surface — for those we leave the
         context field ``None`` and the rule degrades gracefully to
-        ``missing inputs``. Stage 4 will populate them as the equity
-        history + bar-stats pipeline matures."""
-        rows = self._store.list_orders(limit=200)
+        ``missing inputs``. Stage 5 will populate them as the equity
+        history + bar-stats pipeline matures.
+
+        Stage 4 wires ``historical_fakeout_rate`` from the same store:
+        we slice the order history into a "recent" window (last 200) and
+        a "historical" window (rows 200-2000) and compute the fakeout
+        rate over each. The rule fires when recent > 3 × historical."""
+        # Pull a 2,000-row deep window to slice into recent + historical.
+        rows = self._store.list_orders(limit=2_000)
         # Confidence drop rule: pull recent confidences from filled rows.
         confidences = [
             float(r.confidence) for r in rows
             if r.confidence is not None and r.status == OrderStatus.FILLED.value
         ]
-        # Fakeout rate: count FAKEOUT-tagged rows among recent ones.
-        recent_orders = rows[-200:]
-        fakeout_count = sum(
-            1 for r in recent_orders
-            if (r.reason or "").startswith("fakeout") or "FAKEOUT" in (r.reason or "")
-        )
-        recent_fakeout_rate = (fakeout_count / max(1, len(recent_orders))) if recent_orders else None
+
+        def _fakeout_rate(window: list) -> float | None:
+            if not window:
+                return None
+            n = sum(
+                1 for r in window
+                if (r.reason or "").startswith("fakeout") or "FAKEOUT" in (r.reason or "")
+            )
+            return n / len(window)
+
+        recent_window = rows[-200:]
+        historical_window = rows[-2_000:-200] if len(rows) > 200 else []
+        recent_fakeout_rate = _fakeout_rate(recent_window)
+        # Need at least 200 rows in the historical window for the baseline
+        # to be meaningful. Below that the rule should stay silent.
+        historical_fakeout_rate = _fakeout_rate(historical_window) if len(historical_window) >= 200 else None
+
         return DriftContext(
             recent_confidences=confidences[-CONFIDENCE_DROP_LOOKBACK * 2 :],
-            recent_errors=[],            # TODO Stage 4: backtest-vs-live error tracking
-            error_baseline=None,         # TODO Stage 4
-            current_atr=None,            # TODO Stage 4: read from execution_quality_map
-            training_atr_mean=None,      # TODO Stage 4
-            training_atr_stdev=None,     # TODO Stage 4
+            recent_errors=[],            # TODO Stage 5: backtest-vs-live error tracking
+            error_baseline=None,         # TODO Stage 5
+            current_atr=None,            # TODO Stage 5: read from execution_quality_map
+            training_atr_mean=None,      # TODO Stage 5
+            training_atr_stdev=None,     # TODO Stage 5
             recent_fakeout_rate=recent_fakeout_rate,
-            historical_fakeout_rate=None,  # TODO Stage 4: from geometric_map metadata
-            live_drawdown_pct=None,      # TODO Stage 4: from equity-history slice
-            expected_drawdown_pct=None,  # TODO Stage 4: from backtest stats
+            historical_fakeout_rate=historical_fakeout_rate,
+            live_drawdown_pct=None,      # TODO Stage 5: from equity-history slice
+            expected_drawdown_pct=None,  # TODO Stage 5: from backtest stats
         )
 
     def tick(self) -> DriftSnapshot:

@@ -111,7 +111,7 @@ def fetch_bars_for_daemon(instrument_id: str, timeframe: str, count: int) -> lis
          silent reconnect — handles broker drops without dropping the loop.
       4. Otherwise return [] and let the daemon skip the tick.
     """
-    sym = _INSTRUMENT_SYMBOL_MAP.get(instrument_id) or _legacy_symbol_from_id(instrument_id)
+    sym = get_instrument_symbol_map().get(instrument_id) or _legacy_symbol_from_id(instrument_id)
     sym = (sym or "").replace("/", "").upper()
     if not sym:
         return []
@@ -143,15 +143,33 @@ def _legacy_symbol_from_id(instrument_id: str) -> str:
 # publishes this whenever it pushes daemon configs, so the bar fetch can use
 # the right Exness suffix (``EURUSDm`` / ``EURUSDr`` / ``EURUSDz``) for the
 # user's account type rather than the bare ``EURUSD``.
+#
+# Stage 4 (review §4.1): atomic-swap pattern. Worker threads read the map
+# during ticks; the FE updates it via set_instrument_symbol_map at any
+# time. The clear-then-populate pattern in the old code briefly exposed
+# an empty dict to readers. We now build the new dict locally and bind
+# it in a single assignment under a lock so readers always see either
+# the old map or the fully-populated new one.
 _INSTRUMENT_SYMBOL_MAP: dict[str, str] = {}
+_INSTRUMENT_SYMBOL_MAP_LOCK = threading.Lock()
 
 
 def set_instrument_symbol_map(mapping: dict[str, str]) -> None:
-    """Replace the daemon's instrument-id → broker-symbol map. Idempotent."""
-    _INSTRUMENT_SYMBOL_MAP.clear()
+    """Replace the daemon's instrument-id → broker-symbol map atomically."""
+    new_map: dict[str, str] = {}
     for k, v in (mapping or {}).items():
         if isinstance(k, str) and isinstance(v, str) and v.strip():
-            _INSTRUMENT_SYMBOL_MAP[k] = v.strip()
+            new_map[k] = v.strip()
+    global _INSTRUMENT_SYMBOL_MAP
+    with _INSTRUMENT_SYMBOL_MAP_LOCK:
+        _INSTRUMENT_SYMBOL_MAP = new_map
+
+
+def get_instrument_symbol_map() -> dict[str, str]:
+    """Return a copy of the current map. Use this from worker threads
+    rather than reading ``_INSTRUMENT_SYMBOL_MAP`` directly."""
+    with _INSTRUMENT_SYMBOL_MAP_LOCK:
+        return dict(_INSTRUMENT_SYMBOL_MAP)
 
 
 # ── NN predict: call the existing /predict logic in-process ─────────────────

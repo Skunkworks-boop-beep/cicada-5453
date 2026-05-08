@@ -2255,9 +2255,23 @@ function getActions(): TradingStoreActions {
       emit();
     },
     setExecutionEnabled(enabled) {
+      // Stage 4 (architectural review §8.3): the toggle was previously a
+      // dead UI control because the FE trade loop was deleted in Stage 2B.
+      // Restore its meaning by passing it through to the backend daemon —
+      // ON enables every deployed bot's daemon worker, OFF disables them.
+      // The daemon stays running either way; only ``enabled`` flips.
       execution = createExecutionState(enabled);
       schedulePersist();
       emit();
+      const action: 'enable' | 'disable' = enabled ? 'enable' : 'disable';
+      for (const b of bots) {
+        if (b.status !== 'deployed') continue;
+        postDaemonAction(b.id, action).catch((e) => {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[TradingStore] setExecutionEnabled passthrough failed for', b.id, ':', e);
+          }
+        });
+      }
     },
     getOrCreateBot(instrumentId) {
       const inst = instruments.find((i) => i.id === instrumentId);
