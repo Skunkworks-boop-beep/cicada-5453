@@ -161,6 +161,26 @@ def test_get_history_passes_timeframe_and_range():
     assert "to_ts=2000" in url
 
 
+def test_get_ticks_url_encodes_symbol_with_spaces():
+    """Synthetic indices ('Volatility 10 Index', 'Boom 1000 Index') have
+    spaces in their MT5 names. Raw interpolation 500s the bridge — the
+    client must percent-encode the symbol query param."""
+    b, fake = _bridge_with({("GET", "/ticks"): []})
+    b.get_ticks(symbol="Volatility 10 Index", from_ts=1, to_ts=2)
+    url = fake.calls[-1][1]
+    assert "symbol=Volatility+10+Index" in url or "symbol=Volatility%2010%20Index" in url, url
+    # Raw spaces must NOT survive into the URL.
+    assert "Volatility 10 Index" not in url
+
+
+def test_get_history_url_encodes_symbol_with_spaces():
+    b, fake = _bridge_with({("GET", "/history"): []})
+    b.get_history(symbol="Boom 1000 Index", timeframe="M1", from_ts=1, to_ts=2)
+    url = fake.calls[-1][1]
+    assert "symbol=Boom+1000+Index" in url or "symbol=Boom%201000%20Index" in url, url
+    assert "Boom 1000 Index" not in url
+
+
 def test_unexpected_response_type_raises_bridge_error():
     b, _ = _bridge_with({("POST", "/order/place"): "not-a-dict"})
     with pytest.raises(BridgeError):

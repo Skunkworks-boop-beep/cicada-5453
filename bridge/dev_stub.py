@@ -227,13 +227,32 @@ def _build_stub_mt5(account_login: str = "12345", balance: float = 10_000.0) -> 
     return stub
 
 
+class _FakeRow:
+    """One row of an MT5 structured array. Mimics numpy field access via
+    ``r['name']`` and exposes ``r.dtype.names`` so server.py iteration
+    works against the stub the same way it does against real MT5
+    output."""
+
+    def __init__(self, fields: dict, names: tuple):
+        self._fields = fields
+        self.dtype = types.SimpleNamespace(names=names)
+
+    def __getitem__(self, k):
+        return self._fields[k]
+
+    def __contains__(self, k):
+        return k in self._fields
+
+
 class _AsRecArray:
     """Mimic numpy structured array surface that bridge/server.py iterates.
-    Exposes ``dtype.names`` and ``__iter__`` over dict-like rows."""
+    Exposes ``dtype.names`` and ``__iter__`` over rows that themselves
+    behave like structured-array rows."""
 
     def __init__(self, rows: list[dict], names: list[str]):
-        self._rows = rows
-        self.dtype = types.SimpleNamespace(names=tuple(names))
+        self._names = tuple(names)
+        self._rows = [_FakeRow(r, self._names) for r in rows]
+        self.dtype = types.SimpleNamespace(names=self._names)
 
     def __iter__(self):
         return iter(self._rows)

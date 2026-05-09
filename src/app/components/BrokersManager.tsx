@@ -1,6 +1,11 @@
 /**
- * Multi-broker management: Deriv and eXness as defaults; add/connect/disconnect brokers.
- * Execution is routed per instrument via instrument.brokerId.
+ * Broker management. Stage 7 collapsed broker support to MT5 only — every
+ * order, tick, and position now flows through the MT5 bridge inside the
+ * Windows VM. Execution is routed per instrument via instrument.brokerId.
+ *
+ * The deriv_api / exness_api types remain in the BrokerType union so old
+ * persisted state still parses; the hydration migration in
+ * src/app/store/slices/brokerHydration.ts drops those rows on load.
  */
 
 import { useEffect, useState, useMemo } from 'react';
@@ -138,7 +143,7 @@ export function BrokersManager() {
         <Server className="w-3.5 h-3.5" />
         <span>[ BROKERS ]</span>
         <div className="flex-1 border-b border-[#00ff00]"></div>
-        <span>Deriv & eXness: standalone. MT5 add-on: live balance/positions.</span>
+        <span>MT5 only — orders & ticks via the Windows VM bridge.</span>
       </div>
 
       <div className="border-2 border-[#00ff00] bg-black p-4 shadow-[0_0_15px_rgba(0,255,0,0.2)] relative">
@@ -299,40 +304,13 @@ export function BrokersManager() {
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs"
             />
-            <div className="flex items-center gap-4 text-xs">
-              <span className="text-[#00ff00] opacity-80">Connect via:</span>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" name="brokerType" checked={form.type === 'exness_api'} onChange={() => setForm((f) => ({ ...f, type: 'exness_api' }))} className="accent-[#00ff00]" />
-                <span className="text-[#00ff00]">eXness API</span>
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" name="brokerType" checked={form.type === 'deriv_api'} onChange={() => setForm((f) => ({ ...f, type: 'deriv_api' }))} className="accent-[#00ff00]" />
-                <span className="text-[#00ff00]">Deriv API</span>
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" name="brokerType" checked={form.type === 'mt5'} onChange={() => setForm((f) => ({ ...f, type: 'mt5' }))} className="accent-[#00ff00]" />
-                <span className="text-[#ff6600]">MT5</span>
-              </label>
+            <div className="flex items-center gap-2 text-[10px] text-[#00ff00]/70">
+              <span>Type:</span>
+              <span className="text-[#ff6600]">MT5 (only supported broker; routes through Windows VM bridge)</span>
             </div>
-            {form.type === 'exness_api' && (
-              <>
-                <input type="password" placeholder="API key (Exness Personal Area → API)" value={form.apiKey} onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-                <input type="text" placeholder="Base URL (optional)" value={form.baseUrl} onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-              </>
-            )}
-            {form.type === 'mt5' && (
-              <>
-                <input type="text" placeholder="Login" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-                <input type="password" placeholder="Password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-                <input type="text" placeholder="Server (optional)" value={form.server} onChange={(e) => setForm((f) => ({ ...f, server: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-              </>
-            )}
-            {form.type === 'deriv_api' && (
-              <>
-                <input type="text" placeholder="App ID (api.deriv.com)" value={form.appId} onChange={(e) => setForm((f) => ({ ...f, appId: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-                <input type="password" placeholder="Token (Personal Access Token)" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-              </>
-            )}
+            <input type="text" placeholder="Login" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
+            <input type="password" placeholder="Password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
+            <input type="text" placeholder="Server (optional)" value={form.server} onChange={(e) => setForm((f) => ({ ...f, server: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
             <div className="flex gap-2">
               <button onClick={handleAddBroker} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1.5 px-3 text-xs hover:bg-[#00ff0011]">Add broker</button>
               <button onClick={() => { setAddOpen(false); setForm({ name: '', type: 'mt5', login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' }); }} className="border border-[#ff6600] text-[#ff6600] py-1.5 px-3 text-xs hover:bg-[#ff660011]">Cancel</button>
@@ -348,7 +326,7 @@ export function BrokersManager() {
         )}
 
         <div className="mt-3 text-[10px] text-[#00ff00] opacity-50 border-t border-[#00ff00] pt-2">
-          Defaults: Deriv (API), eXness (API key from Personal Area), MT5 add-on. Connect via API or MT5 as needed.
+          MT5 is the only supported broker. Orders, ticks, and history are sourced from the bridge process running inside the Windows VM (localhost:5000). See bridge/SETUP_RUNBOOK.md for VM provisioning.
         </div>
       </div>
     </div>

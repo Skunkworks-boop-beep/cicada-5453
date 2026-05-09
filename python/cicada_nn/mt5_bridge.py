@@ -163,16 +163,23 @@ class MT5Bridge:
         return []
 
     def get_ticks(self, *, symbol: str, from_ts: int, to_ts: int) -> list[dict]:
-        url = f"{self.base_url}/ticks?symbol={symbol}&from_ts={int(from_ts)}&to_ts={int(to_ts)}"
+        # Symbol may contain spaces (e.g. "Volatility 10 Index") so query
+        # params MUST be url-encoded — raw interpolation 500s the bridge.
+        from urllib.parse import urlencode
+        qs = urlencode({"symbol": symbol, "from_ts": int(from_ts), "to_ts": int(to_ts)})
+        url = f"{self.base_url}/ticks?{qs}"
         resp = self.http("GET", url, None, self.timeout_s)
         return resp if isinstance(resp, list) else []
 
     def get_history(self, *, symbol: str, timeframe: str, from_ts: int, to_ts: int) -> list[dict]:
-        url = (
-            f"{self.base_url}/history"
-            f"?symbol={symbol}&timeframe={timeframe}"
-            f"&from_ts={int(from_ts)}&to_ts={int(to_ts)}"
-        )
+        from urllib.parse import urlencode
+        qs = urlencode({
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "from_ts": int(from_ts),
+            "to_ts": int(to_ts),
+        })
+        url = f"{self.base_url}/history?{qs}"
         resp = self.http("GET", url, None, self.timeout_s)
         return resp if isinstance(resp, list) else []
 
