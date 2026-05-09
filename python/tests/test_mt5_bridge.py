@@ -181,6 +181,39 @@ def test_get_history_url_encodes_symbol_with_spaces():
     assert "Boom 1000 Index" not in url
 
 
+# ── Stage 9: /tick (single-tick snapshot) ────────────────────────────────
+
+
+def test_get_tick_returns_payload():
+    payload = {"symbol": "EURUSD", "time": 1700000000, "bid": 1.0925, "ask": 1.0926, "spread": 0.0001, "server_time_ms": 0}
+    b, fake = _bridge_with({("GET", "/tick"): payload})
+    out = b.get_tick(symbol="EURUSD")
+    assert out == payload
+    url = fake.calls[-1][1]
+    assert "symbol=EURUSD" in url
+
+
+def test_get_tick_url_encodes_symbol_with_spaces():
+    """Synthetic indices must work on the single-tick endpoint too."""
+    b, fake = _bridge_with({("GET", "/tick"): {"symbol": "Volatility 10 Index", "time": 1, "bid": 1.0, "ask": 1.0001, "spread": 0.0001}})
+    b.get_tick(symbol="Volatility 10 Index")
+    url = fake.calls[-1][1]
+    assert "Volatility 10 Index" not in url
+    assert "Volatility+10+Index" in url or "Volatility%2010%20Index" in url
+
+
+def test_get_tick_unreachable_raises():
+    b, _ = _bridge_with({("GET", "/tick"): BridgeUnreachableError("vm down")})
+    with pytest.raises(BridgeUnreachableError):
+        b.get_tick(symbol="EURUSD")
+
+
+def test_get_tick_unexpected_response_type_raises():
+    b, _ = _bridge_with({("GET", "/tick"): []})
+    with pytest.raises(BridgeError):
+        b.get_tick(symbol="EURUSD")
+
+
 def test_unexpected_response_type_raises_bridge_error():
     b, _ = _bridge_with({("POST", "/order/place"): "not-a-dict"})
     with pytest.raises(BridgeError):

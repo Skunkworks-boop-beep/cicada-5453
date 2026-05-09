@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react';
 import { useTradingStore } from '../store/TradingStore';
 import type { BrokerConfig } from '../core/types';
 import { BROKER_EXNESS_ID } from '../core/registries';
-import { getBridgeHealth, type BridgeHealth } from '../core/api';
+import { getBridgeHealth, getMt5Tick, type BridgeHealth, type LiveTick } from '../core/api';
 import { Server, Plus, Settings2, Loader2, Wifi, WifiOff, CheckCircle2, Trash2, X } from 'lucide-react';
 
 function statusLabel(b: BrokerConfig): { text: string; cls: string } {
@@ -51,6 +51,7 @@ export function BrokersManager() {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState<BridgeForm>(EMPTY_FORM);
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
+  const [liveTick, setLiveTick] = useState<LiveTick | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,6 +63,25 @@ export function BrokersManager() {
     const id = setInterval(() => void tick(), 5_000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
+
+  // Stage 9: live-tick strip in the runtime row. EURUSD as the canonical
+  // probe symbol because every MT5 broker has it; the value is just a
+  // "is the bridge feeding ticks" reality check — per-instrument ticks
+  // live on the PriceChart / BotExecutionLog.
+  useEffect(() => {
+    if (!bridgeHealth?.reachable || !bridgeHealth?.mt5_connected) {
+      setLiveTick(null);
+      return;
+    }
+    let cancelled = false;
+    const probe = async () => {
+      const t = await getMt5Tick('EURUSD');
+      if (!cancelled) setLiveTick(t);
+    };
+    void probe();
+    const id = setInterval(() => void probe(), 2_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [bridgeHealth?.reachable, bridgeHealth?.mt5_connected]);
 
   const isBuiltIn = (id: string) => id === BROKER_EXNESS_ID;
 
@@ -166,6 +186,20 @@ export function BrokersManager() {
             </div>
             {bridgeHealth?.error ? (
               <span className="text-[10px] text-[#ff4444]/80 truncate max-w-[40%]">{bridgeHealth.error}</span>
+            ) : null}
+            {bridgeHealth?.reachable && bridgeHealth?.mt5_connected ? (
+              <div className="flex items-center gap-2 text-[10px] tracking-wider w-full pt-1 border-t border-[#00ff00]/15 mt-1">
+                <span className="text-[#00ff00]/50">live tick · EURUSD</span>
+                {liveTick ? (
+                  <>
+                    <span className="text-[#00ff00]">bid {liveTick.bid.toFixed(5)}</span>
+                    <span className="text-[#00ff00]">ask {liveTick.ask.toFixed(5)}</span>
+                    <span className="text-[#ff6600]">spread {(liveTick.spread * 10000).toFixed(1)}p</span>
+                  </>
+                ) : (
+                  <span className="text-[#00ff00]/40">probing…</span>
+                )}
+              </div>
             ) : null}
           </div>
 

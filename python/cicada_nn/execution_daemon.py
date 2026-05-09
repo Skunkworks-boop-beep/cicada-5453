@@ -129,12 +129,21 @@ PredictFn = Callable[[BotRuntimeConfig, list[dict], str, float, float], dict]
 StrategySignalFn = Callable[[BotRuntimeConfig, list[dict], str], int]
 # OrderFn signature: (cfg, side, size, entry, stop, target, meta) -> dict.
 # ``meta`` carries fields the order callable needs to write the right
-# order_records row (style, magic, validation outcome). The legacy 6-arg form
-# is also supported via TypeError fallback in _tick_once for older callsites.
+# order_records row (style, magic, validation outcome, tick capture). The
+# legacy 6-arg form is supported via TypeError fallback in _tick_once.
 OrderFn = Callable[..., dict]
 # Hook the daemon can call once per SL change so the runtime can record the
 # move + push it to MT5. Signature: (bot_id, ticket, kind, sl, tp, price, note).
 SLEventFn = Callable[..., None]
+# Stage 9: live-tick provider. Returns ``{bid, ask, spread, time}`` or None
+# if the bridge can't resolve the symbol. Daemon falls back to bar close on
+# None so a momentary symbol gap doesn't halt the bot.
+TickProviderFn = Callable[[str], Optional[dict]]
+# Stage 9: intra-bar close. Called when the daemon detects the live tick has
+# breached a registered SL/TP — belt-and-suspenders against broker-side SL
+# slippage. Signature: (ticket) -> None. Raises propagate; the daemon catches
+# and logs.
+ClosePositionFn = Callable[[int], None]
 
 
 class ExecutionDaemon:
@@ -148,6 +157,8 @@ class ExecutionDaemon:
         strategy_signal_fn: StrategySignalFn,
         order_fn: OrderFn,
         sl_event_fn: Optional[SLEventFn] = None,
+        tick_provider: Optional[TickProviderFn] = None,
+        close_position_fn: Optional[ClosePositionFn] = None,
     ):
         self._lock = threading.Lock()
         self._sl_event_fn: Optional[SLEventFn] = sl_event_fn
@@ -159,6 +170,8 @@ class ExecutionDaemon:
         self._predict = predict_fn
         self._strategy_signal = strategy_signal_fn
         self._submit_order = order_fn
+        self._tick_provider: Optional[TickProviderFn] = tick_provider
+        self._close_position_fn: Optional[ClosePositionFn] = close_position_fn
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -308,19 +321,37 @@ class ExecutionDaemon:
         regime = regime_series[-1] if regime_series else "unknown"
         confidence = 0.6 if regime != "unknown" else 0.4
         latest = bars[-1]
-        price = float(latest.get("close") or 0.0)
-        if price <= 0:
+        signal_price = float(latest.get("close") or 0.0)  # bar-close at signal time
+        if signal_price <= 0:
             return
+
+        # Stage 9: live tick. Used for the intra-bar SL/TP gate (run BEFORE we
+        # advance open-position lifecycle, so a stop that breached this tick
+        # closes here rather than waiting for the next bar) and for the
+        # entry-price snapshot at submit time. None when the bridge can't
+        # resolve the symbol — every downstream consumer falls back to bar
+        # close in that case.
+        tick = self._fetch_tick(cfg.instrument_symbol)
+        if tick is not None:
+            self._check_intrabar_exits(state, tick)
 
         # ATR-as-fraction proxy for volatility scaling
         atr_pct = self._atr_pct(bars, lookback=14)
 
+        # Use the tick mid for SL/TP advancement so trailing stops and
+        # breakeven triggers respond to the live market, not to whichever bar
+        # last closed. Falls back to bar close when no tick is available.
+        live_price = self._tick_mid(tick) or signal_price
         # ── Bug-2 fix: advance per-position SL/TP lifecycle BEFORE attempting
         # new entries. This is the only place SL trail / breakeven / partial
         # decisions are made; the daemon's submit_order call handles broker IO.
         rules = self._resolve_rules(cfg)
-        atr_price = atr_pct * price
-        self._advance_open_positions(state, rules, price, atr_price)
+        atr_price = atr_pct * live_price
+        self._advance_open_positions(state, rules, live_price, atr_price)
+        # Variable kept for downstream try_open_position / validate_order
+        # below — the values they care about are the bar-close-derived risk
+        # numbers (signal_price), with the tick acting only on entry fill.
+        price = signal_price
 
         # Trade-mode aware scope selection. Honour fixed_scope in manual mode;
         # do equity / drawdown / volatility filtering + regime scoring in auto.
@@ -437,26 +468,37 @@ class ExecutionDaemon:
                 self._publish_event(state, kind="order_error", reason=str(e))
             return
 
+        # Stage 9: tick-aware fill price. Use ask for LONG, bid for SHORT
+        # so we record the actual price the broker would fill at, not the
+        # bar close that triggered the signal. Falls back to bar close on
+        # bridge unreachable / unknown symbol.
+        entry_price = self._fill_price(side, tick) or price
+        slippage = self._slippage_price(side, signal_price, entry_price)
+        order_meta: dict[str, Any] = {
+            "rejected": False,
+            "confidence": nn_conf,
+            "style": rules.style,
+            "magic": rules.mt5_magic,
+            "signal_price": signal_price,
+            "tick_bid_at_signal": float(tick["bid"]) if tick else None,
+            "tick_ask_at_signal": float(tick["ask"]) if tick else None,
+            "realized_slippage_pips": slippage,
+        }
         try:
             order = self._submit_order(
                 cfg,
                 side,
                 try_result.size,
-                price,
+                entry_price,
                 try_result.stop_loss,
                 try_result.take_profit,
-                {
-                    "rejected": False,
-                    "confidence": nn_conf,
-                    "style": rules.style,
-                    "magic": rules.mt5_magic,
-                },
+                order_meta,
             )
         except TypeError:
             # Backwards-compat for legacy order callables (no meta param).
             try:
                 order = self._submit_order(
-                    cfg, side, try_result.size, price, try_result.stop_loss, try_result.take_profit
+                    cfg, side, try_result.size, entry_price, try_result.stop_loss, try_result.take_profit
                 )
             except Exception as e:
                 self._publish_event(state, kind="order_error", reason=str(e))
@@ -471,7 +513,7 @@ class ExecutionDaemon:
         if ticket > 0:
             state.position_meta[ticket] = PositionMeta(
                 side=side,
-                entry_price=price,
+                entry_price=entry_price,
                 initial_sl=try_result.stop_loss,
                 initial_tp=try_result.take_profit,
                 current_sl=try_result.stop_loss,
@@ -483,7 +525,9 @@ class ExecutionDaemon:
             kind="order",
             side=side,
             size=try_result.size,
-            entry=price,
+            entry=entry_price,
+            signal_price=signal_price,
+            slippage=slippage,
             stop=try_result.stop_loss,
             target=try_result.take_profit,
             reason=decision.reason,
@@ -590,6 +634,115 @@ class ExecutionDaemon:
                 logger.warning("sl_event_fn failed bot=%s ticket=%s kind=%s: %s",
                                cfg.bot_id, ticket, kind, e)
         self._publish_event(state, kind=f"sl_{kind}", ticket=ticket, sl=sl, tp=tp, note=note)
+
+    # ── Stage 9: tick helpers ───────────────────────────────────────────
+
+    def _fetch_tick(self, symbol: Optional[str]) -> Optional[dict]:
+        """Pull a fresh bid/ask snapshot via the injected provider. Returns
+        None on no provider, no symbol, or any provider error — the daemon
+        falls back to bar close in that case."""
+        if not symbol or self._tick_provider is None:
+            return None
+        try:
+            t = self._tick_provider(symbol)
+        except Exception as e:
+            logger.debug("tick provider raised symbol=%s: %s", symbol, e)
+            return None
+        if not isinstance(t, dict):
+            return None
+        if not t.get("bid") or not t.get("ask"):
+            return None
+        return t
+
+    @staticmethod
+    def _tick_mid(tick: Optional[dict]) -> Optional[float]:
+        if tick is None:
+            return None
+        bid = float(tick.get("bid") or 0.0)
+        ask = float(tick.get("ask") or 0.0)
+        if bid <= 0 or ask <= 0:
+            return None
+        return (bid + ask) / 2.0
+
+    @staticmethod
+    def _fill_price(side: str, tick: Optional[dict]) -> Optional[float]:
+        """Tick-derived fill price: ask for LONG, bid for SHORT. None if no
+        tick — caller falls back to bar close."""
+        if tick is None:
+            return None
+        if side == "LONG":
+            v = float(tick.get("ask") or 0.0)
+        else:
+            v = float(tick.get("bid") or 0.0)
+        return v if v > 0 else None
+
+    @staticmethod
+    def _slippage_price(side: str, signal_price: float, entry_price: float) -> float:
+        """Signed price delta between the bar-close signal and the live fill.
+        Positive = unfavourable for the bot's side (LONG paid more, SHORT got
+        less). Stored as ``realized_slippage_pips`` — for forex 5-digit pairs
+        downstream can convert via × 10_000; for others it's a raw price
+        delta and the UI labels it accordingly."""
+        if signal_price <= 0 or entry_price <= 0:
+            return 0.0
+        delta = entry_price - signal_price
+        return delta if side == "LONG" else -delta
+
+    def _check_intrabar_exits(self, state: BotState, tick: dict) -> None:
+        """Belt-and-suspenders intra-bar SL/TP gate. Compares the live tick to
+        each open position's current_sl / initial_tp. On breach: emit a
+        ``sl_hit`` / ``tp_hit`` event and — if a close callable was injected —
+        fire the close so we don't depend solely on the broker's server-side
+        SL execution. The broker's registered SL is still in force; this is
+        an additional safety net for max-deviation rejects + transient
+        broker hiccups."""
+        if not state.position_meta:
+            return
+        bid = float(tick.get("bid") or 0.0)
+        ask = float(tick.get("ask") or 0.0)
+        if bid <= 0 or ask <= 0:
+            return
+        for ticket, meta in list(state.position_meta.items()):
+            # LONG: exit at bid (broker pays bid to close); SL hit when bid <= SL,
+            # TP hit when bid >= TP. SHORT: exit at ask; SL hit when ask >= SL,
+            # TP hit when ask <= TP.
+            sl_hit = False
+            tp_hit = False
+            exit_price = 0.0
+            if meta.side == "LONG":
+                if meta.current_sl > 0 and bid <= meta.current_sl:
+                    sl_hit, exit_price = True, bid
+                elif meta.initial_tp > 0 and bid >= meta.initial_tp:
+                    tp_hit, exit_price = True, bid
+            else:  # SHORT
+                if meta.current_sl > 0 and ask >= meta.current_sl:
+                    sl_hit, exit_price = True, ask
+                elif meta.initial_tp > 0 and ask <= meta.initial_tp:
+                    tp_hit, exit_price = True, ask
+            if not (sl_hit or tp_hit):
+                continue
+            kind = "sl_hit" if sl_hit else "tp_hit"
+            self._emit_sl_event(
+                state,
+                ticket=ticket,
+                kind=kind,
+                price=exit_price,
+                note=f"intrabar tick {bid:.5f}/{ask:.5f}",
+            )
+            # Belt-and-suspenders close. Tolerated: on broker error the
+            # registered SL still fires server-side; we just lose the
+            # local visibility into the ms-level exit.
+            if self._close_position_fn is not None:
+                try:
+                    self._close_position_fn(int(ticket))
+                except Exception as e:
+                    logger.warning(
+                        "intrabar close failed ticket=%s kind=%s: %s",
+                        ticket, kind, e,
+                    )
+            # Drop from local position_meta so subsequent ticks don't keep
+            # firing. Reconciler will re-create or confirm closure.
+            state.position_meta.pop(ticket, None)
 
     @staticmethod
     def _atr_pct(bars: list[dict], lookback: int = 14) -> float:

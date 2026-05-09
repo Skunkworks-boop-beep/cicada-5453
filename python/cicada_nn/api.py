@@ -2083,6 +2083,23 @@ def mt5_account():
 MT5_OHLC_FULL_HISTORY_CAP = 50_000
 
 
+@app.get("/mt5/tick")
+def mt5_tick(symbol: str):
+    """Single-tick snapshot for live UI (bid/ask/spread). Returns
+    ``{tick: null, error: "..."}`` instead of HTTP errors so the dashboard's
+    Bridge panel can render a clear "no live tick" state without exception
+    handling. Stage 9: tick-aware execution."""
+    if not mt5_client.is_connected():
+        return {"tick": None, "error": "MT5 not connected"}
+    sym = (symbol or "").replace("/", "").strip().upper()
+    if not sym:
+        return {"tick": None, "error": "invalid symbol"}
+    t = mt5_client.get_tick(sym)
+    if t is None:
+        return {"tick": None, "error": "no live tick (symbol unknown or bridge unreachable)"}
+    return {"tick": t, "symbol": sym}
+
+
 @app.get("/mt5/ohlc")
 def mt5_ohlc(
     symbol: str,

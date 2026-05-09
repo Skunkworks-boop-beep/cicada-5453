@@ -162,6 +162,20 @@ class MT5Bridge:
             return resp
         return []
 
+    def get_tick(self, *, symbol: str) -> dict:
+        """Single-tick snapshot for live fill-price discovery + intra-bar
+        SL/TP checks. Returns ``{symbol, time, bid, ask, spread, server_time_ms}``.
+        Raises ``BridgeUnreachableError`` on connect failure and ``BridgeError``
+        when the symbol is unknown — callers should catch the latter and fall
+        back to bar close so a momentary symbol gap doesn't halt the bot."""
+        from urllib.parse import urlencode
+        qs = urlencode({"symbol": symbol})
+        url = f"{self.base_url}/tick?{qs}"
+        resp = self.http("GET", url, None, self.timeout_s)
+        if not isinstance(resp, dict):
+            raise BridgeError(f"get_tick: unexpected response type {type(resp).__name__}")
+        return resp
+
     def get_ticks(self, *, symbol: str, from_ts: int, to_ts: int) -> list[dict]:
         # Symbol may contain spaces (e.g. "Volatility 10 Index") so query
         # params MUST be url-encoded — raw interpolation 500s the bridge.

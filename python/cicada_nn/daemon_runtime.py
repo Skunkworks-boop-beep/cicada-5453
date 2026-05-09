@@ -377,6 +377,18 @@ def daemon_submit_order(
     style = str(meta.get("style") or cfg.trade_style or "day")
     magic = int(meta.get("magic") or 0)
     confidence = meta.get("confidence")
+    # Stage 9: tick capture from execution_daemon. None on bridge unreachable;
+    # the order row stores NULL in that case so reads stay safe on legacy data.
+    sig_price = meta.get("signal_price")
+    tick_bid = meta.get("tick_bid_at_signal")
+    tick_ask = meta.get("tick_ask_at_signal")
+    slip_pips = meta.get("realized_slippage_pips")
+    tick_kwargs: dict[str, Any] = {
+        "signal_price": float(sig_price) if sig_price is not None else None,
+        "tick_bid_at_signal": float(tick_bid) if tick_bid is not None else None,
+        "tick_ask_at_signal": float(tick_ask) if tick_ask is not None else None,
+        "realized_slippage_pips": float(slip_pips) if slip_pips is not None else None,
+    }
 
     # Stage 3: guard the entry path against active halts (reconciler ghost
     # detection, drift halt, emergency stop). The min-hold / per-mode
@@ -400,6 +412,7 @@ def daemon_submit_order(
                     confidence=float(confidence) if confidence is not None else None,
                     status=OrderStatus.REJECTED,
                     reason=reason,
+                    **tick_kwargs,
                 )
             except Exception as e:
                 _warn_with_event("order_record_emergency", "guards reject (emergency) append failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
@@ -428,6 +441,7 @@ def daemon_submit_order(
                     confidence=float(confidence) if confidence is not None else None,
                     status=OrderStatus.REJECTED,
                     reason=reason,
+                    **tick_kwargs,
                 )
             except Exception as e:
                 _warn_with_event("order_record_halt", "guards reject (halt) append failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
@@ -452,6 +466,7 @@ def daemon_submit_order(
                     confidence=float(confidence) if confidence is not None else None,
                     status=OrderStatus.REJECTED,
                     reason=str(meta.get("reason") or "rejected"),
+                    **tick_kwargs,
                 )
             except Exception as e:
                 _warn_with_event("order_record_rejected", "order_records append (rejected) failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
@@ -489,6 +504,7 @@ def daemon_submit_order(
                 take_profit=target,
                 confidence=float(confidence) if confidence is not None else None,
                 status=OrderStatus.INTENT,
+                **tick_kwargs,
             )
         except Exception as e:
             _warn_with_event("order_record_intent", "order_records append (intent) failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
@@ -533,6 +549,7 @@ def daemon_submit_order(
                     status=OrderStatus.BROKER_ERROR,
                     reason=error,
                     ticket=ticket if ticket > 0 else None,
+                    **tick_kwargs,
                 )
             else:
                 final_status = OrderStatus.SUBMITTED if broker == "stub" else OrderStatus.FILLED
@@ -549,6 +566,7 @@ def daemon_submit_order(
                     confidence=float(confidence) if confidence is not None else None,
                     status=final_status,
                     ticket=ticket if ticket > 0 else None,
+                    **tick_kwargs,
                 )
                 # Initial SL/TP is the first sl_tp_events row for this ticket.
                 if ticket > 0:
@@ -661,6 +679,30 @@ def _auto_daemon_enabled() -> bool:
 _DAEMON: Optional[ExecutionDaemon] = None
 
 
+def _live_tick_provider(symbol: str) -> Optional[dict]:
+    """Stage 9: live tick fetch for the daemon. Routes through mt5_client so
+    every callsite shares the same Bridge*Error → None fallback. Returns
+    None on bridge unreachable, unknown symbol, or any client error — the
+    daemon falls back to bar close in that case."""
+    if not symbol or not mt5_client.is_connected():
+        return None
+    try:
+        return mt5_client.get_tick(str(symbol))
+    except Exception as e:
+        logger.debug("live tick fetch failed sym=%s: %s", symbol, e)
+        return None
+
+
+def _live_close_position(ticket: int) -> None:
+    """Stage 9: belt-and-suspenders intra-bar close. Routes through
+    mt5_client.close_position which already swallows BridgeError into a
+    structured (False, ...) tuple. We re-raise on failure so the daemon
+    can log it; the broker's registered SL is still in force regardless."""
+    ok, info = mt5_client.close_position(ticket=int(ticket))
+    if not ok:
+        raise RuntimeError(str(info.get("error") or f"close ticket {ticket} failed"))
+
+
 def get_daemon() -> ExecutionDaemon:
     global _DAEMON
     if _DAEMON is None:
@@ -671,6 +713,8 @@ def get_daemon() -> ExecutionDaemon:
             strategy_signal_fn=daemon_strategy_signal,
             order_fn=daemon_submit_order,
             sl_event_fn=daemon_sl_event,
+            tick_provider=_live_tick_provider,
+            close_position_fn=_live_close_position,
         )
     return _DAEMON
 

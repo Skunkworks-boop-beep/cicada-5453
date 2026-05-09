@@ -317,8 +317,39 @@ def get_symbol_spreads(symbols: list[str]) -> dict[str, float]:
 
 
 def get_prices(symbols: list[str]) -> dict[str, dict[str, float]]:
-    """As above — current bid/ask is not yet on the bridge surface."""
-    return {}
+    """Snapshot of current bid/ask for each symbol via the bridge's ``/tick``
+    endpoint. Used by the position P/L view + the live execution path. Returns
+    {} for symbols the bridge can't resolve (and on bridge unreachable — the
+    caller should treat empty as 'no live tick available')."""
+    if not symbols:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    bridge = get_bridge()
+    for sym in symbols:
+        try:
+            t = bridge.get_tick(symbol=str(sym))
+        except (BridgeUnreachableError, BridgeError):
+            continue
+        if isinstance(t, dict):
+            out[str(sym)] = {
+                "bid": float(t.get("bid") or 0.0),
+                "ask": float(t.get("ask") or 0.0),
+                "spread": float(t.get("spread") or 0.0),
+                "time": float(t.get("time") or 0),
+            }
+    return out
+
+
+def get_tick(symbol: str) -> dict | None:
+    """Single-symbol convenience wrapper around the bridge's ``/tick`` endpoint.
+    Returns None on any bridge / symbol error so the caller can fall back
+    cleanly (e.g. to bar close) without paying a try/except at every call site."""
+    if not symbol:
+        return None
+    try:
+        return get_bridge().get_tick(symbol=str(symbol))
+    except (BridgeUnreachableError, BridgeError):
+        return None
 
 
 # ── Orders ────────────────────────────────────────────────────────────────
@@ -378,6 +409,26 @@ def modify_sl(
     except BridgeError as e:
         return False, {"error": str(e)}
     return True, {"ticket": int(ticket), "sl": new_sl, "tp": new_tp}
+
+
+def close_position(*, ticket: int, volume: float | None = None) -> tuple[bool, dict[str, Any]]:
+    """Close a full position (or a partial volume) via the bridge. Returns
+    ``(ok, info)`` where info carries the close price + retcode on success
+    and an error string on failure. Used by the daemon's intra-bar SL/TP
+    safety net (Stage 9)."""
+    try:
+        resp = get_bridge().close_position(ticket=int(ticket), volume=(float(volume) if volume is not None else None))
+    except BridgeUnreachableError as e:
+        return False, {"error": f"bridge unreachable: {e}"}
+    except BridgeRetcodeError as e:
+        return False, {"error": e.detail, "retcode": e.retcode}
+    except BridgeError as e:
+        return False, {"error": str(e)}
+    return True, {
+        "ticket": int(ticket),
+        "price": float(resp.get("close_price") or 0.0),
+        "retcode": int(resp.get("retcode") or 0),
+    }
 
 
 def position_close_partial(

@@ -164,6 +164,17 @@ class TickRow(BaseModel):
     spread: float
 
 
+class LiveTick(BaseModel):
+    """Single tick snapshot from ``mt5.symbol_info_tick``. Used by the live
+    execution path for fill-price discovery and intra-bar SL/TP checks."""
+    symbol: str
+    time: int
+    bid: float
+    ask: float
+    spread: float
+    server_time_ms: int = 0
+
+
 class BarRow(BaseModel):
     time: int
     open: float
@@ -402,6 +413,30 @@ def positions() -> list[PositionRow]:
             )
         )
     return out
+
+
+@app.get("/tick", response_model=LiveTick)
+def tick_now(symbol: str) -> LiveTick:
+    """Cheap single-tick snapshot for live fill-price discovery + intra-bar
+    SL/TP checks. Wraps ``mt5.symbol_info_tick(symbol)`` — orders of magnitude
+    cheaper than ``/ticks`` for the daemon's hot path."""
+    m = _require_mt5()
+    sym = symbol.replace("/", "").strip().upper()
+    t = m.symbol_info_tick(sym)
+    if t is None:
+        raise HTTPException(status_code=404, detail=f"symbol {sym} not found or has no tick")
+    bid = float(getattr(t, "bid", 0.0) or 0.0)
+    ask = float(getattr(t, "ask", 0.0) or 0.0)
+    ts = int(getattr(t, "time", 0) or 0)
+    server_ms = int(getattr(t, "time_msc", 0) or 0)
+    return LiveTick(
+        symbol=sym,
+        time=ts,
+        bid=bid,
+        ask=ask,
+        spread=max(0.0, ask - bid),
+        server_time_ms=server_ms,
+    )
 
 
 @app.get("/ticks", response_model=list[TickRow])

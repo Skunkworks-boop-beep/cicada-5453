@@ -1381,6 +1381,37 @@ export interface BridgeHealth {
   error?: string | null;
 }
 
+export interface LiveTick {
+  symbol: string;
+  bid: number;
+  ask: number;
+  spread: number;
+  time: number;
+}
+
+/** Live single-tick snapshot (bid/ask) for the active bridge / a chart.
+ *  Returns null when the bridge can't resolve the symbol or MT5 is offline.
+ *  Never throws — callers can render "no tick" deterministically. */
+export async function getMt5Tick(symbol: string): Promise<LiveTick | null> {
+  if (!symbol) return null;
+  try {
+    const url = `${getNnApiBaseUrl()}/mt5/tick?symbol=${encodeURIComponent(symbol)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.tick) return null;
+    return {
+      symbol: String(data.symbol ?? symbol),
+      bid: Number(data.tick.bid ?? 0),
+      ask: Number(data.tick.ask ?? 0),
+      spread: Number(data.tick.spread ?? 0),
+      time: Number(data.tick.time ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Probe the MT5 bridge running inside the Windows VM. Never throws. */
 export async function getBridgeHealth(): Promise<BridgeHealth> {
   try {

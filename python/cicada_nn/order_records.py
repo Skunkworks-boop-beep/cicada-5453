@@ -64,6 +64,15 @@ class OrderRow:
     latency_baseline_ms: float | None = None
     latency_anomaly: bool | None = None
     expected_slippage_ms: float | None = None
+    # ── Stage 9: tick-aware execution. signal_price is bar-close at signal
+    # time; tick_bid_at_signal / tick_ask_at_signal are the live tick the
+    # daemon read for the fill; realized_slippage_pips = entry_price -
+    # signal_price expressed in pip units (positive = unfavourable for the
+    # bot's side). All NULL for legacy rows.
+    signal_price: float | None = None
+    tick_bid_at_signal: float | None = None
+    tick_ask_at_signal: float | None = None
+    realized_slippage_pips: float | None = None
 
 
 @dataclass(frozen=True)
@@ -101,17 +110,28 @@ CREATE TABLE IF NOT EXISTS orders (
     execution_delta_ms    REAL,
     latency_baseline_ms   REAL,
     latency_anomaly       INTEGER,
-    expected_slippage_ms  REAL
+    expected_slippage_ms  REAL,
+    -- Stage 9: tick-aware execution.
+    signal_price          REAL,
+    tick_bid_at_signal    REAL,
+    tick_ask_at_signal    REAL,
+    realized_slippage_pips REAL
 )
 """
 
 # Stage 2A migration: rows written before the new columns existed need the
 # columns added. SQLite has no `ADD COLUMN IF NOT EXISTS` so we introspect.
+# Stage 9 added four more columns for tick-aware execution; the migration
+# loop is the same shape so we just append to the tuple.
 _LATENCY_COLUMNS = (
     ("execution_delta_ms", "REAL"),
     ("latency_baseline_ms", "REAL"),
     ("latency_anomaly", "INTEGER"),
     ("expected_slippage_ms", "REAL"),
+    ("signal_price", "REAL"),
+    ("tick_bid_at_signal", "REAL"),
+    ("tick_ask_at_signal", "REAL"),
+    ("realized_slippage_pips", "REAL"),
 )
 
 _SL_TP_DDL = """
@@ -195,6 +215,10 @@ class OrderRecordStore:
         latency_baseline_ms: Optional[float] = None,
         latency_anomaly: Optional[bool] = None,
         expected_slippage_ms: Optional[float] = None,
+        signal_price: Optional[float] = None,
+        tick_bid_at_signal: Optional[float] = None,
+        tick_ask_at_signal: Optional[float] = None,
+        realized_slippage_pips: Optional[float] = None,
     ) -> int:
         """Append an order row. Returns the new row id.
 
@@ -213,8 +237,9 @@ class OrderRecordStore:
                 "INSERT INTO orders (bot_id, instrument_id, instrument_symbol, style, "
                 "side, size, entry_price, stop_loss, take_profit, confidence, "
                 "status, reason, ticket, data_source, ts, "
-                "execution_delta_ms, latency_baseline_ms, latency_anomaly, expected_slippage_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "execution_delta_ms, latency_baseline_ms, latency_anomaly, expected_slippage_ms, "
+                "signal_price, tick_bid_at_signal, tick_ask_at_signal, realized_slippage_pips) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     bot_id,
                     instrument_id,
@@ -235,6 +260,10 @@ class OrderRecordStore:
                     float(latency_baseline_ms) if latency_baseline_ms is not None else None,
                     (int(bool(latency_anomaly)) if latency_anomaly is not None else None),
                     float(expected_slippage_ms) if expected_slippage_ms is not None else None,
+                    float(signal_price) if signal_price is not None else None,
+                    float(tick_bid_at_signal) if tick_bid_at_signal is not None else None,
+                    float(tick_ask_at_signal) if tick_ask_at_signal is not None else None,
+                    float(realized_slippage_pips) if realized_slippage_pips is not None else None,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -385,6 +414,18 @@ def _row_to_order(r: sqlite3.Row) -> OrderRow:
         ),
         expected_slippage_ms=(
             float(_get("expected_slippage_ms")) if _get("expected_slippage_ms") is not None else None
+        ),
+        signal_price=(
+            float(_get("signal_price")) if _get("signal_price") is not None else None
+        ),
+        tick_bid_at_signal=(
+            float(_get("tick_bid_at_signal")) if _get("tick_bid_at_signal") is not None else None
+        ),
+        tick_ask_at_signal=(
+            float(_get("tick_ask_at_signal")) if _get("tick_ask_at_signal") is not None else None
+        ),
+        realized_slippage_pips=(
+            float(_get("realized_slippage_pips")) if _get("realized_slippage_pips") is not None else None
         ),
     )
 
