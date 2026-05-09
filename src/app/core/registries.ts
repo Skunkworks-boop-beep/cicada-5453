@@ -159,7 +159,47 @@ export const DEFAULT_INSTRUMENTS: Instrument[] = [
   { id: 'inst-solusd', symbol: 'SOL/USD', type: 'crypto', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M5', 'M15', 'H1', 'H4', 'D1'], rebuildIntervalHours: 168 },
   { id: 'inst-xrpusd', symbol: 'XRP/USD', type: 'crypto', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M5', 'M15', 'H1', 'H4', 'D1'], rebuildIntervalHours: 168 },
   { id: 'inst-dogeusd', symbol: 'DOGE/USD', type: 'crypto', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M5', 'M15', 'H1', 'H4', 'D1'], rebuildIntervalHours: 168 },
-  // ─── Deriv synthetic indices removed in Stage 4 — MT5 doesn't trade them.
+  // ─── Deriv synthetic indices (Stage 8 reintroduction) ─────────────────────
+  // Re-added with Deriv's MT5-server symbol naming. These trade through the
+  // bridge when the operator's Windows VM has MT5 logged into a Deriv MT5
+  // account; for non-Deriv MT5 brokers the symbols won't resolve and the
+  // bridge will return "symbol not found" — operators on other brokers can
+  // edit the symbol field or remove the instrument.
+  // Volatility (continuous) — R_10..R_100 via MT5
+  { id: 'inst-deriv-r10', symbol: 'Volatility 10 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r25', symbol: 'Volatility 25 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r50', symbol: 'Volatility 50 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r75', symbol: 'Volatility 75 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r100', symbol: 'Volatility 100 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  // Volatility (1-second tick) — 1HZ*V
+  { id: 'inst-deriv-r10s', symbol: 'Volatility 10 (1s) Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r25s', symbol: 'Volatility 25 (1s) Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r50s', symbol: 'Volatility 50 (1s) Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r75s', symbol: 'Volatility 75 (1s) Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-r100s', symbol: 'Volatility 100 (1s) Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+  // Boom — spike up
+  { id: 'inst-deriv-boom300', symbol: 'Boom 300 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-boom500', symbol: 'Boom 500 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-boom600', symbol: 'Boom 600 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-boom900', symbol: 'Boom 900 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-boom1000', symbol: 'Boom 1000 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  // Crash — spike down
+  { id: 'inst-deriv-crash300', symbol: 'Crash 300 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-crash500', symbol: 'Crash 500 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-crash600', symbol: 'Crash 600 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-crash900', symbol: 'Crash 900 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-crash1000', symbol: 'Crash 1000 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5'], rebuildIntervalHours: 168 },
+  // Jump — discrete jumps
+  { id: 'inst-deriv-jump10', symbol: 'Jump 10 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-jump25', symbol: 'Jump 25 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-jump50', symbol: 'Jump 50 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-jump75', symbol: 'Jump 75 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-jump100', symbol: 'Jump 100 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  // Step + Range Break
+  { id: 'inst-deriv-step', symbol: 'Step Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_SYNTH], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-rb100', symbol: 'Range Break 100 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+  { id: 'inst-deriv-rb200', symbol: 'Range Break 200 Index', type: 'synthetic_deriv', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: ['M1', 'M5', 'M15'], rebuildIntervalHours: 168 },
+
   // eXness indices (real index CFDs — no synthetics; full list per Exness Help)
   // volumeMin 0.5, step 0.01: open 0.51 when min, so partial close can leave 0.01
   { id: 'inst-exness-aus200', symbol: 'AUS200', type: 'indices_exness', status: 'active', brokerId: BROKER_EXNESS_ID, timeframes: [...TF_INDICES], rebuildIntervalHours: 168, volumeMin: 0.5, volumeStep: 0.01 },

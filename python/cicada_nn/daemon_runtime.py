@@ -37,6 +37,30 @@ from . import mt5_client
 logger = logging.getLogger(__name__)
 
 
+def _warn_with_event(category: str, message: str, **fields: object) -> None:
+    """Stage 8 (review §4.3): log a warning AND surface it on the event bus.
+
+    The 48 broad ``except Exception`` blocks across the daemon path
+    previously logged to stderr only — operators never saw failures in
+    BotExecutionLog. This helper emits both: ``logger.warning`` for ops
+    grep/grafana + ``EVENT_BUS.publish('log', level='warning', ...)`` so
+    the dashboard surfaces the failure immediately. Use at every safety-
+    critical except site in the order placement / SL-event paths."""
+    logger.warning(message, *fields.values())
+    try:
+        EVENT_BUS.publish(
+            "log",
+            level="warning",
+            category=category,
+            message=message % tuple(fields.values()) if fields else message,
+            **fields,
+        )
+    except Exception:
+        # If the event bus itself is broken we don't want to mask the
+        # original failure; the logger.warning already happened.
+        pass
+
+
 # ── In-process portfolio + bars cache ────────────────────────────────────────
 
 
@@ -378,7 +402,7 @@ def daemon_submit_order(
                     reason=reason,
                 )
             except Exception as e:
-                logger.warning("guards reject (emergency) append failed bot=%s: %s", cfg.bot_id, e)
+                _warn_with_event("order_record_emergency", "guards reject (emergency) append failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
         EVENT_BUS.publish(
             "order", bot_id=cfg.bot_id, status="rejected", reason=reason, ts=time.time(),
         )
@@ -406,7 +430,7 @@ def daemon_submit_order(
                     reason=reason,
                 )
             except Exception as e:
-                logger.warning("guards reject (halt) append failed bot=%s: %s", cfg.bot_id, e)
+                _warn_with_event("order_record_halt", "guards reject (halt) append failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
         EVENT_BUS.publish(
             "order", bot_id=cfg.bot_id, status="rejected", reason=reason, ts=time.time(),
         )
@@ -430,7 +454,7 @@ def daemon_submit_order(
                     reason=str(meta.get("reason") or "rejected"),
                 )
             except Exception as e:
-                logger.warning("order_records append (rejected) failed bot=%s: %s", cfg.bot_id, e)
+                _warn_with_event("order_record_rejected", "order_records append (rejected) failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
         EVENT_BUS.publish(
             "order",
             bot_id=cfg.bot_id,
@@ -467,7 +491,7 @@ def daemon_submit_order(
                 status=OrderStatus.INTENT,
             )
         except Exception as e:
-            logger.warning("order_records append (intent) failed bot=%s: %s", cfg.bot_id, e)
+            _warn_with_event("order_record_intent", "order_records append (intent) failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
 
     ticket: int = 0
     broker = "stub"
@@ -490,7 +514,7 @@ def daemon_submit_order(
                 error = str(result.get("error") or "order failed")
         except Exception as e:
             error = str(e)
-            logger.warning("mt5 order_send raised bot=%s: %s", cfg.bot_id, e)
+            _warn_with_event("mt5_order_send", "mt5 order_send raised bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
 
     if store is not None:
         try:
@@ -538,7 +562,7 @@ def daemon_submit_order(
                         note=f"open {side} {style}",
                     )
         except Exception as e:
-            logger.warning("order_records append (final) failed bot=%s: %s", cfg.bot_id, e)
+            _warn_with_event("order_record_final", "order_records append (final) failed bot=%s: %s", bot_id=cfg.bot_id, error=str(e))
 
     EVENT_BUS.publish(
         "order",
@@ -599,7 +623,7 @@ def daemon_sl_event(
         try:
             mt5_client.modify_sl(ticket=ticket, symbol="", new_sl=sl, new_tp=tp)
         except Exception as e:
-            logger.warning("mt5 modify_sl failed bot=%s ticket=%s: %s", bot_id, ticket, e)
+            _warn_with_event("mt5_modify_sl", "mt5 modify_sl failed bot=%s ticket=%s: %s", bot_id=bot_id, ticket=ticket, error=str(e))
     EVENT_BUS.publish(
         "sl_tp_event",
         bot_id=bot_id,

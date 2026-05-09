@@ -83,6 +83,7 @@ import type { BotExecutionEvent } from '../core/botExecution';
 import type { PortfolioState } from '../core/types';
 import { buildScheduleFromInstrumentsAndBots, getNextDueRebuilds } from '../core/scheduler';
 import { loadStateFromBackend, saveState, mergeStrategiesWithPersisted, saveResearchBars, clearResearchBars, type PersistedState } from '../core/persistence';
+import { hydrateBrokers } from './slices/brokerHydration';
 import {
   postBuild,
   getHealth,
@@ -3116,15 +3117,11 @@ function getActions(): TradingStoreActions {
           };
         });
         if (loaded.brokers?.length) {
-          const byId = new Map(loaded.brokers.map((b) => [b.id, b]));
-          brokers = DEFAULT_BROKERS.map((d) => {
-            const p = byId.get(d.id);
-            return p ? { ...d, ...p, config: p.config && Object.keys(p.config).length ? p.config : d.config } : d;
-          });
-          loaded.brokers.filter((b) => !DEFAULT_BROKERS.some((d) => d.id === b.id)).forEach((b) => brokers.push(b));
-          brokers.sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
-          // Reset 'connecting' to 'disconnected' — WebSocket is lost on reload; prevents stuck CONNECTING state
-          brokers = brokers.map((b) => (b.status === 'connecting' ? { ...b, status: 'disconnected' as const } : b));
+          // Stage 8: hydration extracted into slices/brokerHydration.ts —
+          // pure-function tested in isolation. Drops deprecated broker
+          // types (deriv_api, exness_api), merges persisted into default,
+          // resets stuck 'connecting' status.
+          brokers = hydrateBrokers(loaded.brokers, DEFAULT_BROKERS);
         }
         if (loaded.strategies?.length) {
           strategies = mergeStrategiesWithPersisted(getAllStrategies(), loaded.strategies);

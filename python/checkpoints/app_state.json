@@ -6,7 +6,7 @@
 "symbol": "EUR/USD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -26,7 +26,7 @@
 "symbol": "USD/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -46,7 +46,7 @@
 "symbol": "GBP/USD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -66,7 +66,7 @@
 "symbol": "USD/CHF",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -86,7 +86,7 @@
 "symbol": "AUD/USD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -106,7 +106,7 @@
 "symbol": "USD/CAD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -126,7 +126,7 @@
 "symbol": "NZD/USD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -146,7 +146,7 @@
 "symbol": "EUR/GBP",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -166,7 +166,7 @@
 "symbol": "EUR/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -186,7 +186,7 @@
 "symbol": "EUR/CHF",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -206,7 +206,7 @@
 "symbol": "EUR/AUD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -226,7 +226,7 @@
 "symbol": "EUR/CAD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -246,7 +246,7 @@
 "symbol": "EUR/NZD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -266,7 +266,7 @@
 "symbol": "GBP/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -286,7 +286,7 @@
 "symbol": "GBP/CHF",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -306,7 +306,7 @@
 "symbol": "GBP/AUD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -326,7 +326,7 @@
 "symbol": "GBP/CAD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -346,7 +346,7 @@
 "symbol": "GBP/NZD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -366,7 +366,7 @@
 "symbol": "AUD/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -386,7 +386,7 @@
 "symbol": "AUD/NZD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -406,7 +406,7 @@
 "symbol": "AUD/CAD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -426,7 +426,7 @@
 "symbol": "AUD/CHF",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -446,7 +446,7 @@
 "symbol": "NZD/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -466,7 +466,7 @@
 "symbol": "NZD/CAD",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -485,7 +485,7 @@
 "symbol": "NZD/CHF",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -504,7 +504,7 @@
 "symbol": "CAD/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -523,7 +523,7 @@
 "symbol": "CAD/CHF",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -542,7 +542,7 @@
 "symbol": "CHF/JPY",
 "type": "fiat",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -561,7 +561,7 @@
 "symbol": "BTC/USD",
 "type": "crypto",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M5",
 "M15",
@@ -580,7 +580,7 @@
 "symbol": "ETH/USD",
 "type": "crypto",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M5",
 "M15",
@@ -597,7 +597,7 @@
 "symbol": "SOL/USD",
 "type": "crypto",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M5",
 "M15",
@@ -613,7 +613,7 @@
 "symbol": "XRP/USD",
 "type": "crypto",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M5",
 "M15",
@@ -629,7 +629,7 @@
 "symbol": "DOGE/USD",
 "type": "crypto",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M5",
 "M15",
@@ -642,10 +642,10 @@
 },
 {
 "id": "inst-deriv-r10",
-"symbol": "R_10",
+"symbol": "Volatility 10 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -657,15 +657,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 199.9999999998181,
-"selected": true
+"selected": false
 },
 {
 "id": "inst-deriv-r25",
-"symbol": "R_25",
+"symbol": "Volatility 25 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -677,15 +676,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 199.9999999998181,
 "selected": false
 },
 {
 "id": "inst-deriv-r50",
-"symbol": "R_50",
+"symbol": "Volatility 50 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -697,15 +695,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 200.00000000010232,
 "selected": false
 },
 {
 "id": "inst-deriv-r75",
-"symbol": "R_75",
+"symbol": "Volatility 75 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -717,15 +714,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 60000,
 "selected": false
 },
 {
 "id": "inst-deriv-r100",
-"symbol": "R_100",
+"symbol": "Volatility 100 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -737,112 +733,136 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 20.000000000004547,
 "selected": false
 },
 {
-"id": "inst-deriv-boom50",
-"symbol": "BOOM50",
+"id": "inst-deriv-r10s",
+"symbol": "Volatility 10 (1s) Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
-"M5"
+"M5",
+"M15"
 ],
 "rebuildIntervalHours": 168,
 "selected": false
 },
 {
-"id": "inst-deriv-boom150n",
-"symbol": "BOOM150N",
+"id": "inst-deriv-r25s",
+"symbol": "Volatility 25 (1s) Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
-"M5"
+"M5",
+"M15"
 ],
 "rebuildIntervalHours": 168,
-"spread": 57671.99999991134,
 "selected": false
 },
 {
-"id": "inst-deriv-boom300n",
-"symbol": "BOOM300N",
+"id": "inst-deriv-r50s",
+"symbol": "Volatility 50 (1s) Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
+"timeframes": [
+"M1",
+"M5",
+"M15"
+],
+"rebuildIntervalHours": 168,
+"selected": false
+},
+{
+"id": "inst-deriv-r75s",
+"symbol": "Volatility 75 (1s) Index",
+"type": "synthetic_deriv",
+"status": "active",
+"brokerId": "broker-exness",
+"timeframes": [
+"M1",
+"M5",
+"M15"
+],
+"rebuildIntervalHours": 168,
+"selected": false
+},
+{
+"id": "inst-deriv-r100s",
+"symbol": "Volatility 100 (1s) Index",
+"type": "synthetic_deriv",
+"status": "active",
+"brokerId": "broker-exness",
+"timeframes": [
+"M1",
+"M5",
+"M15"
+],
+"rebuildIntervalHours": 168,
+"selected": false
+},
+{
+"id": "inst-deriv-boom300",
+"symbol": "Boom 300 Index",
+"type": "synthetic_deriv",
+"status": "active",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 80.00000000015461,
 "selected": false
 },
 {
 "id": "inst-deriv-boom500",
-"symbol": "BOOM500",
+"symbol": "Boom 500 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 73.99999999961437,
 "selected": false
 },
 {
 "id": "inst-deriv-boom600",
-"symbol": "BOOM600",
+"symbol": "Boom 600 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 78.99999999972351,
 "selected": false
 },
 {
 "id": "inst-deriv-boom900",
-"symbol": "BOOM900",
+"symbol": "Boom 900 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 97.99999999995634,
 "selected": false
 },
 {
 "id": "inst-deriv-boom1000",
-"symbol": "BOOM1000",
+"symbol": "Boom 1000 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5"
-],
-"rebuildIntervalHours": 168,
-"spread": 148.99999999943248,
-"selected": false
-},
-{
-"id": "inst-deriv-crash50",
-"symbol": "CRASH50",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
@@ -851,95 +871,76 @@
 "selected": false
 },
 {
-"id": "inst-deriv-crash150n",
-"symbol": "CRASH150N",
+"id": "inst-deriv-crash300",
+"symbol": "Crash 300 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 64657.99999987211,
-"selected": false
-},
-{
-"id": "inst-deriv-crash300n",
-"symbol": "CRASH300N",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5"
-],
-"rebuildIntervalHours": 168,
-"spread": 76.99999999999818,
 "selected": false
 },
 {
 "id": "inst-deriv-crash500",
-"symbol": "CRASH500",
+"symbol": "Crash 500 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 45.00000000007276,
 "selected": false
 },
 {
 "id": "inst-deriv-crash600",
-"symbol": "CRASH600",
+"symbol": "Crash 600 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 302.9999999998836,
 "selected": false
 },
 {
 "id": "inst-deriv-crash900",
-"symbol": "CRASH900",
+"symbol": "Crash 900 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 231.9999999999709,
 "selected": false
 },
 {
 "id": "inst-deriv-crash1000",
-"symbol": "CRASH1000",
+"symbol": "Crash 1000 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5"
 ],
 "rebuildIntervalHours": 168,
-"spread": 54.999999999381544,
 "selected": false
 },
 {
 "id": "inst-deriv-jump10",
-"symbol": "jump_10",
+"symbol": "Jump 10 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -951,15 +952,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 233.99999999965075,
 "selected": false
 },
 {
 "id": "inst-deriv-jump25",
-"symbol": "jump_25",
+"symbol": "Jump 25 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -971,15 +971,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 747.9999999995925,
 "selected": false
 },
 {
 "id": "inst-deriv-jump50",
-"symbol": "jump_50",
+"symbol": "Jump 50 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -991,15 +990,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 340.99999999998545,
 "selected": false
 },
 {
 "id": "inst-deriv-jump75",
-"symbol": "jump_75",
+"symbol": "Jump 75 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1011,195 +1009,14 @@
 "W1"
 ],
 "rebuildIntervalHours": 168,
-"spread": 206.9999999999709,
 "selected": false
 },
 {
 "id": "inst-deriv-jump100",
-"symbol": "jump_100",
+"symbol": "Jump 100 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 8.999999999997499,
-"selected": false
-},
-{
-"id": "inst-deriv-step10",
-"symbol": "1HZ10V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 19.99999999989086,
-"selected": false
-},
-{
-"id": "inst-deriv-step15",
-"symbol": "1HZ15V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 399.9999999996362,
-"selected": false
-},
-{
-"id": "inst-deriv-step25",
-"symbol": "1HZ25V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 6000,
-"selected": false
-},
-{
-"id": "inst-deriv-step30",
-"symbol": "1HZ30V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 599.9999999994543,
-"selected": false
-},
-{
-"id": "inst-deriv-step50",
-"symbol": "1HZ50V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 4000,
-"selected": false
-},
-{
-"id": "inst-deriv-step75",
-"symbol": "1HZ75V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 79.99999999997272,
-"selected": false
-},
-{
-"id": "inst-deriv-step90",
-"symbol": "1HZ90V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 2000,
-"selected": false
-},
-{
-"id": "inst-deriv-step100",
-"symbol": "1HZ100V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 39.99999999998636,
-"selected": false
-},
-{
-"id": "inst-deriv-step150",
-"symbol": "1HZ150V",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1214,11 +1031,11 @@
 "selected": false
 },
 {
-"id": "inst-deriv-step200",
-"symbol": "1HZ200V",
+"id": "inst-deriv-step",
+"symbol": "Step Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1234,10 +1051,10 @@
 },
 {
 "id": "inst-deriv-rb100",
-"symbol": "range_break_100",
+"symbol": "Range Break 100 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1248,10 +1065,10 @@
 },
 {
 "id": "inst-deriv-rb200",
-"symbol": "range_break_200",
+"symbol": "Range Break 200 Index",
 "type": "synthetic_deriv",
 "status": "active",
-"brokerId": "broker-deriv",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1261,168 +1078,11 @@
 "selected": false
 },
 {
-"id": "inst-deriv-wldaud",
-"symbol": "WLDAUD",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 156.00000000006276,
-"selected": false
-},
-{
-"id": "inst-deriv-wldeur",
-"symbol": "WLDEUR",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 135.99999999996726,
-"selected": false
-},
-{
-"id": "inst-deriv-wldgbp",
-"symbol": "WLDGBP",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 159.99999999996817,
-"selected": false
-},
-{
-"id": "inst-deriv-wldxau",
-"symbol": "WLDXAU",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 349435.99999998696,
-"selected": false
-},
-{
-"id": "inst-deriv-wldusd",
-"symbol": "WLDUSD",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"spread": 119.99999999989086,
-"selected": false
-},
-{
-"id": "inst-deriv-stprng3",
-"symbol": "stpRNG3",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"selected": false
-},
-{
-"id": "inst-deriv-stprng4",
-"symbol": "stpRNG4",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"selected": false
-},
-{
-"id": "inst-deriv-stprng5",
-"symbol": "stpRNG5",
-"type": "synthetic_deriv",
-"status": "active",
-"brokerId": "broker-deriv",
-"timeframes": [
-"M1",
-"M5",
-"M15",
-"M30",
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"rebuildIntervalHours": 168,
-"selected": false
-},
-{
 "id": "inst-exness-aus200",
 "symbol": "AUS200",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1442,7 +1102,7 @@
 "symbol": "US30",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1462,7 +1122,7 @@
 "symbol": "US500",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1482,7 +1142,7 @@
 "symbol": "USTEC",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1502,7 +1162,7 @@
 "symbol": "UK100",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1522,7 +1182,7 @@
 "symbol": "DE30",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1542,7 +1202,7 @@
 "symbol": "FR40",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1562,7 +1222,7 @@
 "symbol": "JP225",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1582,7 +1242,7 @@
 "symbol": "HK50",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1602,7 +1262,7 @@
 "symbol": "STOXX50",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1622,7 +1282,7 @@
 "symbol": "CHI50",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1642,7 +1302,7 @@
 "symbol": "SWI20",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1662,7 +1322,7 @@
 "symbol": "EU50",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1675,14 +1335,14 @@
 "rebuildIntervalHours": 168,
 "volumeMin": 0.5,
 "volumeStep": 0.01,
-"selected": false
+"selected": true
 },
 {
 "id": "inst-exness-nas100",
 "symbol": "NAS100",
 "type": "indices_exness",
 "status": "active",
-"brokerId": "broker-exness-api",
+"brokerId": "broker-exness",
 "timeframes": [
 "M1",
 "M5",
@@ -1700,38 +1360,23 @@
 ],
 "brokers": [
 {
-"id": "broker-deriv",
-"name": "Deriv",
-"type": "deriv_api",
-"status": "connected",
-"config": {
-"appId": "72142",
-"password": "N56BRwHVP7Rmj1n"
-},
-"order": 0,
-"connectedAt": "2026-03-24T00:28:50.892Z"
-},
-{
-"id": "broker-exness-api",
-"name": "eXness",
-"type": "exness_api",
-"status": "disconnected",
-"config": {},
-"order": 1
-},
-{
 "id": "broker-exness",
 "name": "MT5 add-on",
 "type": "mt5",
-"status": "disconnected",
-"config": {},
-"order": 2
+"status": "connected",
+"config": {
+"login": "12345",
+"password": "anything",
+"server": "anything"
+},
+"order": 2,
+"connectedAt": "2026-05-09T02:36:19.130Z"
 }
 ],
 "strategies": [
 {
 "id": "cp-head-shoulders",
-"enabled": false
+"enabled": true
 },
 {
 "id": "cp-inverse-h-s",
@@ -1759,27 +1404,27 @@
 },
 {
 "id": "cp-flag-bull",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-flag-bear",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-pennant",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-wedge-rising",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-wedge-falling",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-fib-retracement",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-fib-extension",
@@ -1787,11 +1432,11 @@
 },
 {
 "id": "cp-channel-up",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-channel-down",
-"enabled": true
+"enabled": false
 },
 {
 "id": "cp-rectangle",
@@ -2707,14 +2352,7 @@
 "unknown"
 ],
 "strategyIds": [
-"cp-flag-bull",
-"cp-flag-bear",
-"cp-pennant",
-"cp-wedge-rising",
-"cp-wedge-falling",
-"cp-fib-retracement",
-"cp-channel-up",
-"cp-channel-down"
+"cp-head-shoulders"
 ],
 "riskLevel": 2,
 "maxPositions": 5,
@@ -2734,8 +2372,8 @@
 {
 "id": "bot-inst-deriv-r10-1774281056540",
 "name": "CICADA_R_10",
-"instrumentId": "inst-deriv-r10",
-"instrumentSymbol": "R_10",
+"instrumentId": "inst-eurusd",
+"instrumentSymbol": "EUR/USD",
 "timeframes": [
 "M1",
 "M5",
@@ -2763,14 +2401,7 @@
 "unknown"
 ],
 "strategyIds": [
-"cp-flag-bull",
-"cp-flag-bear",
-"cp-pennant",
-"cp-wedge-rising",
-"cp-wedge-falling",
-"cp-fib-retracement",
-"cp-channel-up",
-"cp-channel-down"
+"cp-head-shoulders"
 ],
 "riskLevel": 2,
 "maxPositions": 5,
@@ -2786,6 +2417,55 @@
 "status": "outdated",
 "buildProgress": 0,
 "nextRebuildAt": "2026-03-30T14:50:56.540Z"
+},
+{
+"id": "bot-inst-exness-eu50-1778291846911",
+"name": "CICADA_EU50",
+"instrumentId": "inst-exness-eu50",
+"instrumentSymbol": "EU50",
+"timeframes": [
+"M1",
+"M5",
+"M15"
+],
+"styles": [
+"scalping",
+"day",
+"medium_swing",
+"swing",
+"sniper"
+],
+"allowedScopes": [
+"scalp",
+"day",
+"swing"
+],
+"scopeMode": "auto",
+"regimes": [
+"trending_bull",
+"trending_bear",
+"ranging",
+"reversal_bull",
+"reversal_bear",
+"unknown"
+],
+"strategyIds": [
+"cp-head-shoulders"
+],
+"riskLevel": 2,
+"maxPositions": 5,
+"riskParams": {
+"riskPerTradePct": 0.0032500000000000003,
+"maxDrawdownPct": 0.19,
+"useKelly": false,
+"kellyFraction": 0.25,
+"maxCorrelatedExposure": 1.6,
+"defaultStopLossPct": 0.024,
+"defaultRiskRewardRatio": 2.3
+},
+"status": "outdated",
+"buildProgress": 0,
+"nextRebuildAt": "2026-05-16T01:57:26.911Z"
 }
 ],
 "execution": {
@@ -2794,94 +2474,8 @@
 },
 "backtest": {
 "results": [],
-"runRequest": {
-"instrumentIds": [
-"inst-deriv-r10"
-],
-"strategyIds": [
-"cp-flag-bull",
-"cp-flag-bear",
-"cp-pennant",
-"cp-wedge-rising",
-"cp-wedge-falling",
-"cp-fib-retracement",
-"cp-channel-up",
-"cp-channel-down"
-],
-"timeframes": [
-"H1",
-"H4",
-"D1",
-"W1"
-],
-"regimes": [
-"trending_bull",
-"trending_bear",
-"ranging",
-"reversal_bull",
-"reversal_bear",
-"volatile",
-"breakout",
-"consolidation",
-"unknown",
-"any"
-],
-"dateFrom": "2000-01-01",
-"dateTo": "2026-03-24",
-"instrumentSpreads": {
-"inst-deriv-r10": 199.9999999998181
-},
-"instrumentRiskOverrides": {
-"inst-deriv-r10": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-}
-},
-"jobRiskOverrides": {
-"inst-deriv-r10|cp-flag-bull": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-flag-bear": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-pennant": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-wedge-rising": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-wedge-falling": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-fib-retracement": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-channel-up": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-},
-"inst-deriv-r10|cp-channel-down": {
-"stopLossPct": 0.04,
-"riskPerTradePct": 0.005,
-"takeProfitR": 1.5
-}
-}
-},
-"status": "running",
+"runRequest": null,
+"status": "idle",
 "progress": 0,
 "selectedTimeframes": [
 "H1",
@@ -2896,12 +2490,12 @@
 "botBuildLog": [],
 "botExecutionLog": [],
 "portfolio": {
-"balance": 9850.72,
-"peakEquity": 9850.72,
+"balance": 10000,
+"peakEquity": 10000,
 "totalPnl": 0,
 "totalPnlPercent": 0,
 "realizedPnl": 0,
-"dataSource": "deriv",
+"dataSource": "mt5",
 "positions": []
 }
 }

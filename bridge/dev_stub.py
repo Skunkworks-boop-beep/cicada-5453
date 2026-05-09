@@ -172,21 +172,37 @@ def _build_stub_mt5(account_login: str = "12345", balance: float = 10_000.0) -> 
         )
 
     def login(account_id, password=None, server=None):
-        """Stage 7 dev-stub login — accepts any non-empty credentials.
+        """Stage 7 dev-stub login — accepts any non-empty creds + a
+        password that doesn't contain 'wrong'/'bad'/'fail' so the
+        operator can deliberately exercise the failure path. Real
+        broker validation requires the production bridge inside a
+        Windows VM with MT5 logged into a broker account.
 
-        Sets the simulated session's login/server so subsequent
-        account_info() calls reflect what the operator typed. Mirrors
-        the contract MT5.login() exposes; deliberately permissive
-        because real validation requires a broker."""
-        if not account_id or not str(account_id).strip():
+        Stage 8: also sets a meaningful ``last_error`` tuple so the
+        dashboard's failure banner shows something useful instead of
+        the previous '(0, "ok")' placeholder."""
+        if not account_id or str(account_id).strip() in ("", "0"):
+            state["last_error"] = (10004, "Invalid account: account number is empty or zero")
+            return False
+        if password and any(t in str(password).lower() for t in ("wrong", "bad", "fail")):
+            state["last_error"] = (10004, "Invalid credentials: password rejected by stub")
+            return False
+        try:
+            n = int(str(account_id).strip())
+            if n < 1000:
+                state["last_error"] = (10004, f"Invalid account: {n} is below the stub minimum (1000)")
+                return False
+        except ValueError:
+            state["last_error"] = (10004, f"Invalid account: {account_id!r} is not numeric")
             return False
         state["current_login"] = str(account_id)
         if server:
             state["current_server"] = str(server)
+        state["last_error"] = (0, "Success")
         return True
 
     def last_error():
-        return (0, "ok")
+        return state.get("last_error", (0, "ok"))
 
     stub = types.SimpleNamespace(
         # Constants chosen to mirror real MT5 values where the bridge's
