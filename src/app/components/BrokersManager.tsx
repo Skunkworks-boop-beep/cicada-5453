@@ -1,149 +1,135 @@
 /**
- * Broker management. Stage 7 collapsed broker support to MT5 only — every
- * order, tick, and position now flows through the MT5 bridge inside the
- * Windows VM. Execution is routed per instrument via instrument.brokerId.
+ * Bridge Manager. Each row is a named MT5 account credential set ("a
+ * bridge"). The bridge runtime (the FastAPI process inside the Windows
+ * VM at localhost:5000) is shared — switching bridges = re-logging MT5
+ * with that bridge's credentials.
  *
- * The deriv_api / exness_api types remain in the BrokerType union so old
- * persisted state still parses; the hydration migration in
- * src/app/store/slices/brokerHydration.ts drops those rows on load.
+ * Persistence still uses the brokers[] / BrokerConfig shape so old
+ * snapshots load, but everything in this UI talks about bridges. The
+ * deriv_api / exness_api types are stripped on load by
+ * src/app/store/slices/brokerHydration.ts; this component only ever
+ * sees mt5 rows.
  */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { useTradingStore } from '../store/TradingStore';
-import type { BrokerConfig, BrokerType } from '../core/types';
-import { BROKER_DERIV_ID, BROKER_EXNESS_ID, BROKER_EXNESS_API_ID } from '../core/registries';
-// Stage 7: Deriv API removed; the validation UI it powered is gone.
+import type { BrokerConfig } from '../core/types';
+import { BROKER_EXNESS_ID } from '../core/registries';
 import { getBridgeHealth, type BridgeHealth } from '../core/api';
-import { Server, Plus, Settings2, Loader2, Wifi, WifiOff } from 'lucide-react';
-function statusColor(status: string) {
-  switch (status) {
-    case 'connected': return 'text-[#00ff00]';
-    case 'connecting': return 'text-[#ffaa00]';
-    case 'error': return 'text-[#ff4444]';
-    default: return 'text-[#00ff00] opacity-60';
-  }
+import { Server, Plus, Settings2, Loader2, Wifi, WifiOff, CheckCircle2, Trash2, X } from 'lucide-react';
+
+function statusLabel(b: BrokerConfig): { text: string; cls: string } {
+  if (b.status === 'connected') return { text: 'ACTIVE', cls: 'text-[#00ff00]' };
+  if (b.status === 'connecting') return { text: 'CONNECTING', cls: 'text-[#ffff00]' };
+  if (b.status === 'error') return { text: 'ERROR', cls: 'text-[#ff4444]' };
+  return { text: 'IDLE', cls: 'text-[#00ff00]/50' };
 }
 
-function typeLabel(type: BrokerType) {
-  if (type === 'exness_api') return 'eXness API (deprecated)';
-  if (type === 'mt5') return 'MT5';
-  return 'Deriv API (deprecated)';
+function maskLogin(login: string | undefined): string {
+  if (!login) return '—';
+  const s = String(login);
+  if (s.length <= 4) return s;
+  return `…${s.slice(-4)}`;
 }
 
-// Stage 7: Deriv groups no longer used; kept as a stub for any callers still referencing the constant.
-const DERIV_GROUP_ORDER: string[] = [
-  'Volatility', 'Crash/Boom', 'Jump', 'Step', 'Range Break', 'World', 'Uncategorized',
-];
+interface BridgeForm {
+  name: string;
+  login: string;
+  password: string;
+  server: string;
+}
+
+const EMPTY_FORM: BridgeForm = { name: '', login: '', password: '', server: '' };
 
 export function BrokersManager() {
   const { state, actions } = useTradingStore();
-  const { brokers, instruments } = state;
+  const { brokers } = state;
+  // Hide any deprecated rows that somehow survive (defensive — hydration migration handles this).
+  const bridges = brokers.filter((b) => b.type === 'mt5');
+
   const [editingId, setEditingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', type: 'mt5' as BrokerType, login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' });
-  const [derivApiResult, setDerivApiResult] = useState<Awaited<ReturnType<typeof getActiveSyntheticSymbols>> | null>(null);
-  // Stage 2A: bridge health pill (polled, no global store coupling)
-  const [bridge, setBridge] = useState<BridgeHealth | null>(null);
+  const [form, setForm] = useState<BridgeForm>(EMPTY_FORM);
+  const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       const h = await getBridgeHealth();
-      if (!cancelled) setBridge(h);
+      if (!cancelled) setBridgeHealth(h);
     };
     void tick();
     const id = setInterval(() => void tick(), 5_000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  // Stage 7: Deriv validation panel removed; the API + instruments are gone.
-  const isDefault = (id: string) => id === BROKER_DERIV_ID || id === BROKER_EXNESS_ID || id === BROKER_EXNESS_API_ID;
-  const isMt5Addon = (id: string) => id === BROKER_EXNESS_ID;
-  const instrumentCount = (brokerId: string) => instruments.filter((i) => i.brokerId === brokerId).length;
-  const displayInstrumentCount = (b: BrokerConfig) =>
-    b.id === BROKER_EXNESS_ID && b.status !== 'connected' ? 0 : instrumentCount(b.id);
+  const isBuiltIn = (id: string) => id === BROKER_EXNESS_ID;
 
-  const handleConnect = async (b: BrokerConfig) => {
-    if (b.type === 'exness_api') {
-      if (b.config.apiKey) {
-        await actions.connectBroker(b.id, b.config);
-      } else {
-        setForm((f) => ({ ...f, apiKey: b.config.apiKey ?? '', baseUrl: b.config.baseUrl ?? '' }));
-        setEditingId(b.id);
-      }
-    } else if (b.type === 'mt5') {
-      const hasCreds = b.config.login || b.config.password;
-      if (hasCreds) {
-        await actions.connectBroker(b.id, b.config);
-      } else {
-        setForm((f) => ({ ...f, login: b.config.login ?? '', password: b.config.password ?? '', server: b.config.server ?? '' }));
-        setEditingId(b.id);
-      }
-    } else {
-      if (b.config.appId && b.config.password) {
-        await actions.connectBroker(b.id, b.config);
-      } else {
-        setForm((f) => ({ ...f, appId: b.config.appId ?? '', password: b.config.password ?? '' }));
-        setEditingId(b.id);
-      }
+  const useBridge = async (b: BrokerConfig) => {
+    if (b.status === 'connecting') return;
+    if (!b.config.login || !b.config.password) {
+      // No credentials yet — open the editor so the operator can fill them.
+      setForm({
+        name: b.name,
+        login: String(b.config.login ?? ''),
+        password: String(b.config.password ?? ''),
+        server: String(b.config.server ?? ''),
+      });
+      setEditingId(b.id);
+      return;
     }
+    // Mark every other bridge as IDLE — the MT5 terminal can only host one
+    // login at a time, so at most one bridge is ACTIVE.
+    bridges.forEach((other) => {
+      if (other.id !== b.id && other.status === 'connected') {
+        actions.disconnectBroker(other.id);
+      }
+    });
+    await actions.connectBroker(b.id, b.config);
   };
 
-  const handleSaveCredentials = async (id: string) => {
-    const b = brokers.find((x) => x.id === id);
+  const saveBridgeEdit = (id: string) => {
+    const b = bridges.find((x) => x.id === id);
     if (!b) return;
-    if (b.type === 'exness_api') {
-      await actions.connectBroker(id, { apiKey: form.apiKey, baseUrl: form.baseUrl || undefined });
-    } else if (b.type === 'mt5') {
-      await actions.connectBroker(id, { login: form.login, password: form.password, server: form.server });
-    } else {
-      await actions.connectBroker(id, { appId: form.appId, password: form.password });
-    }
-    setForm({ name: '', type: 'mt5', login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' });
+    actions.updateBroker(id, {
+      name: form.name.trim() || b.name,
+      config: { ...b.config, login: form.login, password: form.password, server: form.server },
+    });
     setEditingId(null);
+    setForm(EMPTY_FORM);
   };
 
-  /** Save credentials only (no connect). User clicks Connect separately. */
-  const handleSaveOnly = (id: string) => {
-    const b = brokers.find((x) => x.id === id);
-    if (!b) return;
-    if (b.type === 'exness_api') {
-      actions.updateBroker(id, { config: { ...b.config, apiKey: form.apiKey, baseUrl: form.baseUrl || undefined } });
-    } else if (b.type === 'mt5') {
-      actions.updateBroker(id, { config: { ...b.config, login: form.login, password: form.password, server: form.server } });
-    } else {
-      actions.updateBroker(id, { config: { ...b.config, appId: form.appId, password: form.password } });
-    }
-    setForm({ name: '', type: 'mt5', login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' });
-    setEditingId(null);
-  };
-
-  const handleAddBroker = () => {
+  const handleAddBridge = () => {
     if (!form.name.trim()) return;
-    const id = 'broker-' + form.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    const config = form.type === 'exness_api'
-      ? { apiKey: form.apiKey, baseUrl: form.baseUrl || undefined }
-      : form.type === 'mt5'
-        ? { login: form.login, password: form.password, server: form.server }
-        : { appId: form.appId, password: form.password };
+    const baseId = 'bridge-' + form.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    let id = baseId;
+    let suffix = 2;
+    while (bridges.some((b) => b.id === id)) id = `${baseId}-${suffix++}`;
     actions.addBroker({
       id,
       name: form.name.trim(),
-      type: form.type,
+      type: 'mt5',
       status: 'disconnected',
-      config,
-      order: brokers.length,
+      config: { login: form.login, password: form.password, server: form.server },
+      order: bridges.length,
     });
-    setForm({ name: '', type: 'mt5', login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' });
+    setForm(EMPTY_FORM);
     setAddOpen(false);
+  };
+
+  const cancelForm = () => {
+    setAddOpen(false);
+    setEditingId(null);
+    setForm(EMPTY_FORM);
   };
 
   return (
     <div className="relative">
-      <div className="flex items-center gap-2 text-[#00ff00] text-[10px] mb-1">
+      <div className="flex items-center gap-2 text-[#00ff00] text-[10px] mb-1 tracking-wider">
         <Server className="w-3.5 h-3.5" />
-        <span>[ BROKERS ]</span>
+        <span>[ MT5 BRIDGES ]</span>
         <div className="flex-1 border-b border-[#00ff00]"></div>
-        <span>MT5 only — orders & ticks via the Windows VM bridge.</span>
+        <span className="opacity-70">switch between MT5 accounts via the shared VM bridge</span>
       </div>
 
       <div className="border-2 border-[#00ff00] bg-black p-4 shadow-[0_0_15px_rgba(0,255,0,0.2)] relative">
@@ -153,180 +139,217 @@ export function BrokersManager() {
         <div className="absolute bottom-0 right-0 w-3 h-3 border-r-2 border-b-2 border-[#00ff00]" />
 
         <div className="space-y-3">
-          {/* Stage 2A: MT5 BRIDGE pill — first row, same visual recipe as broker rows */}
-          <div className="border border-[#00ff00]/40 bg-black/50 p-3 flex flex-wrap items-center justify-between gap-2">
+          {/* Bridge runtime health — first row, distinct visual recipe so it doesn't read as a switchable bridge */}
+          <div className="border border-[#00ff00]/50 bg-[#00ff0008] p-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-3">
-              <span className={`flex items-center gap-1.5 font-medium text-xs ${
-                bridge?.reachable ? 'text-[#00ff00]' : 'text-[#ff6600]'
+              <span className={`flex items-center gap-1.5 text-[10px] tracking-wider ${
+                bridgeHealth?.reachable ? 'text-[#00ff00]' : 'text-[#ff6600]'
               }`}>
-                {bridge?.reachable ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-                MT5 BRIDGE
+                {bridgeHealth?.reachable ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+                [ BRIDGE RUNTIME ]
               </span>
-              <span className="text-[10px] text-[#ff6600]">(localhost:5000 → Windows VM)</span>
-              <span className={`text-[10px] ${
-                bridge == null ? 'text-[#00ff00]/60'
-                  : !bridge.reachable ? 'text-[#ff4444]'
-                    : bridge.mt5_connected ? 'text-[#00ff00]'
+              <span className="text-[10px] text-[#00ff00]/60">localhost:5000 → Windows VM</span>
+              <span className={`text-[10px] tracking-wider ${
+                bridgeHealth == null ? 'text-[#00ff00]/60'
+                  : !bridgeHealth.reachable ? 'text-[#ff4444]'
+                    : bridgeHealth.mt5_connected ? 'text-[#00ff00]'
                       : 'text-[#ff6600]'
               }`}>
-                {bridge == null
-                  ? 'PROBING...'
-                  : !bridge.reachable
-                    ? 'BRIDGE UNREACHABLE'
-                    : bridge.mt5_connected
-                      ? `BRIDGE OK · ${bridge.account ?? '—'}`
-                      : 'MT5 OFFLINE INSIDE VM'}
+                {bridgeHealth == null
+                  ? 'PROBING…'
+                  : !bridgeHealth.reachable
+                    ? 'UNREACHABLE'
+                    : bridgeHealth.mt5_connected
+                      ? `OK · acct ${bridgeHealth.account ?? '—'}`
+                      : 'MT5 OFFLINE'}
               </span>
             </div>
-            {bridge?.error ? (
-              <span className="text-[10px] text-[#ff4444]/80 truncate max-w-[40%]">{bridge.error}</span>
+            {bridgeHealth?.error ? (
+              <span className="text-[10px] text-[#ff4444]/80 truncate max-w-[40%]">{bridgeHealth.error}</span>
             ) : null}
           </div>
-          {brokers.map((b) => (
-            <div
-              key={b.id}
-              className="border border-[#00ff00]/40 bg-black/50 p-3 flex flex-wrap items-center justify-between gap-2"
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-[#00ff00] font-medium text-xs">{b.name}</span>
-                <span className="text-[10px] text-[#ff6600]">({typeLabel(b.type)})</span>
-                <span className={`text-[10px] ${statusColor(b.status)}`}>
-                  {b.status === 'connecting' && <Loader2 className="w-3 h-3 inline animate-spin mr-1" />}
-                  {b.status.toUpperCase()}
-                </span>
-                <span className="text-[10px] text-[#00ff00]/60">{displayInstrumentCount(b)} instruments</span>
-              </div>
-              {isMt5Addon(b.id) && (b.config.login || b.config.password) && b.status !== 'connected' && (
-                <div className="w-full text-[10px] text-[#00ff00]/80">
-                  Uses MT5 account from login. Connect to use this account, or set credentials to switch.
-                </div>
-              )}
-              {b.lastError && (
-                <div className="w-full text-[10px] text-[#ff4444] border border-[#ff4444]/50 bg-black/80 px-2 py-1">
-                  {b.lastError}
-                </div>
-              )}
-              {editingId === b.id && b.type === 'mt5' && (
-                <div className="w-full grid grid-cols-2 gap-2 mt-2 p-2 border border-[#ff6600]/50">
-                  <input type="text" placeholder="Login (account)" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-                  <input type="password" placeholder="Password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-                  <input type="text" placeholder="Server (optional)" value={form.server} onChange={(e) => setForm((f) => ({ ...f, server: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs col-span-2" />
-                  <div className="col-span-2 flex gap-2">
-                    <button onClick={() => handleSaveOnly(b.id)} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1 px-2 text-xs hover:bg-[#00ff0011]">Save</button>
-                    <button onClick={() => { setEditingId(null); setForm({ name: '', type: 'mt5', login: '', password: '', server: '', appId: '' }); }} className="border border-[#ff6600] text-[#ff6600] py-1 text-xs px-2 hover:bg-[#ff660011]">Cancel</button>
-                  </div>
-                </div>
-              )}
-              {editingId === b.id && b.type === 'exness_api' && (
-                <div className="w-full grid grid-cols-2 gap-2 mt-2 p-2 border border-[#ff6600]/50">
-                  <input type="password" placeholder="API key (Exness Personal Area → API)" value={form.apiKey} onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs col-span-2" />
-                  <input type="text" placeholder="Base URL (optional, e.g. https://api.exness.com)" value={form.baseUrl} onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs col-span-2" />
-                  <div className="col-span-2 flex gap-2">
-                    <button onClick={() => handleSaveOnly(b.id)} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1 px-2 text-xs hover:bg-[#00ff0011]">Save</button>
-                    <button onClick={() => { setEditingId(null); setForm((f) => ({ ...f, apiKey: '', baseUrl: '' })); }} className="border border-[#ff6600] text-[#ff6600] py-1 text-xs px-2 hover:bg-[#ff660011]">Cancel</button>
-                  </div>
-                </div>
-              )}
-              {editingId === b.id && b.type === 'deriv_api' && (
-                <div className="w-full grid grid-cols-2 gap-2 mt-2 p-2 border border-[#ff6600]/50">
-                  <input type="text" placeholder="App ID (api.deriv.com)" value={form.appId} onChange={(e) => setForm((f) => ({ ...f, appId: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs col-span-2" />
-                  <input type="password" placeholder="Token (Personal Access Token)" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs col-span-2" />
-                  <div className="col-span-2 flex gap-2">
-                    <button onClick={() => handleSaveOnly(b.id)} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1 px-2 text-xs hover:bg-[#00ff0011]">Save</button>
-                    <button onClick={() => { setEditingId(null); setForm((f) => ({ ...f, appId: '', password: '' })); }} className="border border-[#ff6600] text-[#ff6600] py-1 text-xs px-2 hover:bg-[#ff660011]">Cancel</button>
-                  </div>
-                </div>
-              )}
-              <div className="flex items-center gap-1">
-                {(b.type === 'mt5' || b.type === 'deriv_api' || b.type === 'exness_api') && b.status !== 'connected' && (
-                    <button
-                    onClick={() => {
-                      if (b.type === 'exness_api') setForm((f) => ({ ...f, apiKey: b.config.apiKey ?? '', baseUrl: b.config.baseUrl ?? '' }));
-                      else if (b.type === 'mt5') setForm((f) => ({ ...f, login: b.config.login ?? '', password: b.config.password ?? '', server: b.config.server ?? '' }));
-                      else setForm((f) => ({ ...f, appId: b.config.appId ?? '', password: b.config.password ?? '' }));
-                      setEditingId(editingId === b.id ? null : b.id);
-                    }}
-                    className="p-1 border border-[#ff6600] text-[#ff6600] hover:bg-[#ff660011] text-[10px] transition-all duration-200"
-                  >
-                    <Settings2 className="w-3 h-3" />
-                  </button>
-                )}
-                {(b.type === 'mt5' || b.type === 'exness_api') && b.status === 'connected' && (
-                    <button
-                    onClick={() => {
-                      if (b.type === 'exness_api') setForm((f) => ({ ...f, apiKey: b.config.apiKey ?? '', baseUrl: b.config.baseUrl ?? '' }));
-                      else setForm((f) => ({ ...f, login: b.config.login ?? '', password: b.config.password ?? '', server: b.config.server ?? '' }));
-                      setEditingId(editingId === b.id ? null : b.id);
-                    }}
-                    className="p-1 border border-[#ff6600]/60 text-[#ff6600]/80 hover:bg-[#ff660008] text-[10px] transition-all duration-200"
-                  >
-                    <Settings2 className="w-3 h-3" />
-                  </button>
-                )}
-                {b.status === 'connected' ? (
-                  <button
-                      onClick={() => actions.disconnectBroker(b.id)}
-                      className="border border-[#ff4444] text-[#ff4444] px-2 py-1 text-[10px] hover:bg-[#ff444411] transition-all duration-200"
-                    >
-                      Disconnect
-                    </button>
-                ) : (
-                  <button
-                      onClick={() => handleConnect(b)}
-                      disabled={b.status === 'connecting'}
-                      className="flex items-center gap-1.5 border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] hover:bg-[#00ff0011] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-all duration-200"
-                    >
-                      {b.status === 'connecting' ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                      {b.status === 'connecting' ? 'Connecting…' : 'Connect'}
-                    </button>
-                )}
-                {!isDefault(b.id) && (
-                  <button
-                      onClick={() => actions.removeBroker(b.id)}
-                      className="border border-[#ff6600] text-[#ff6600] px-2 py-1 text-[10px] hover:bg-[#ff660011] transition-all duration-200"
-                    >
-                      Remove
-                    </button>
-                )}
-              </div>
+
+          {bridges.length === 0 ? (
+            <div className="border border-dashed border-[#00ff00]/40 p-3 text-[10px] text-[#00ff00]/60 text-center">
+              No bridges configured. Add one to log into MT5.
             </div>
-          ))}
+          ) : null}
+
+          {bridges.map((b) => {
+            const sl = statusLabel(b);
+            const isEditing = editingId === b.id;
+            return (
+              <div
+                key={b.id}
+                className={`border ${b.status === 'connected' ? 'border-[#00ff00]' : 'border-[#00ff00]/30'} bg-black/50 p-3 space-y-2`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {b.status === 'connected' && <CheckCircle2 className="w-3.5 h-3.5 text-[#00ff00]" />}
+                    <span className="text-[#00ff00] text-xs tracking-wider">{b.name}</span>
+                    <span className="text-[10px] text-[#00ff00]/60">login {maskLogin(b.config.login as string | undefined)}</span>
+                    {b.config.server ? (
+                      <span className="text-[10px] text-[#00ff00]/40">· {String(b.config.server)}</span>
+                    ) : null}
+                    <span className={`text-[10px] tracking-wider ${sl.cls}`}>
+                      {b.status === 'connecting' && <Loader2 className="w-3 h-3 inline animate-spin mr-1" />}
+                      [ {sl.text} ]
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {b.status === 'connected' ? (
+                      <button
+                        onClick={() => actions.disconnectBroker(b.id)}
+                        className="border border-[#ff4444] text-[#ff4444] px-2 py-1 text-[10px] tracking-wider hover:bg-[#ff444411] transition-colors"
+                      >
+                        [ DISCONNECT ]
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => useBridge(b)}
+                        disabled={b.status === 'connecting'}
+                        className="border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider hover:bg-[#00ff0011] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        [ {b.status === 'connecting' ? 'CONNECTING…' : 'USE'} ]
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        if (isEditing) {
+                          cancelForm();
+                        } else {
+                          setForm({
+                            name: b.name,
+                            login: String(b.config.login ?? ''),
+                            password: String(b.config.password ?? ''),
+                            server: String(b.config.server ?? ''),
+                          });
+                          setEditingId(b.id);
+                          setAddOpen(false);
+                        }
+                      }}
+                      title="Edit credentials"
+                      className="p-1 border border-[#ff6600] text-[#ff6600] hover:bg-[#ff660011] transition-colors"
+                    >
+                      <Settings2 className="w-3 h-3" />
+                    </button>
+                    {!isBuiltIn(b.id) && (
+                      <button
+                        onClick={() => actions.removeBroker(b.id)}
+                        title="Remove bridge"
+                        className="p-1 border border-[#ff4444]/60 text-[#ff4444]/80 hover:bg-[#ff444411] transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {b.lastError ? (
+                  <div className="text-[10px] text-[#ff4444] border border-[#ff4444]/50 bg-black/80 px-2 py-1">
+                    {b.lastError}
+                  </div>
+                ) : null}
+
+                {isEditing ? (
+                  <div className="border border-[#ff6600]/50 p-2 space-y-1.5">
+                    <input
+                      type="text"
+                      placeholder="Bridge name"
+                      value={form.name}
+                      onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                      className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+                    />
+                    <input
+                      type="text"
+                      placeholder="MT5 login (account number)"
+                      value={form.login}
+                      onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))}
+                      className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+                    />
+                    <input
+                      type="password"
+                      placeholder="MT5 password"
+                      value={form.password}
+                      onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                      className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+                    />
+                    <input
+                      type="text"
+                      placeholder="MT5 server (e.g. Exness-Real42; optional)"
+                      value={form.server}
+                      onChange={(e) => setForm((f) => ({ ...f, server: e.target.value }))}
+                      className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={() => saveBridgeEdit(b.id)} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1 text-[10px] tracking-wider hover:bg-[#00ff0011] transition-colors">
+                        [ SAVE ]
+                      </button>
+                      <button onClick={cancelForm} className="border border-[#ff6600] text-[#ff6600] py-1 px-3 text-[10px] tracking-wider hover:bg-[#ff660011] transition-colors">
+                        [ CANCEL ]
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
 
-        {/* Stage 7: Deriv synthetic-instrument validation panel removed (Deriv API gone). */}
-
         {addOpen ? (
-          <div className="mt-3 p-3 border border-[#ff6600]/50 space-y-2">
+          <div className="mt-3 p-3 border border-[#ff6600]/50 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-[#ff6600] tracking-wider">[ NEW BRIDGE ]</span>
+              <button onClick={cancelForm} className="text-[#ff6600] hover:text-[#ff8833]"><X className="w-3 h-3" /></button>
+            </div>
             <input
               type="text"
-              placeholder="Broker name"
+              placeholder="Bridge name (e.g. Exness Demo, Live Prop A1)"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs"
+              className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
             />
-            <div className="flex items-center gap-2 text-[10px] text-[#00ff00]/70">
-              <span>Type:</span>
-              <span className="text-[#ff6600]">MT5 (only supported broker; routes through Windows VM bridge)</span>
-            </div>
-            <input type="text" placeholder="Login" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-            <input type="password" placeholder="Password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-            <input type="text" placeholder="Server (optional)" value={form.server} onChange={(e) => setForm((f) => ({ ...f, server: e.target.value }))} className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-xs" />
-            <div className="flex gap-2">
-              <button onClick={handleAddBroker} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1.5 px-3 text-xs hover:bg-[#00ff0011]">Add broker</button>
-              <button onClick={() => { setAddOpen(false); setForm({ name: '', type: 'mt5', login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' }); }} className="border border-[#ff6600] text-[#ff6600] py-1.5 px-3 text-xs hover:bg-[#ff660011]">Cancel</button>
+            <input
+              type="text"
+              placeholder="MT5 login (account number)"
+              value={form.login}
+              onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))}
+              className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+            />
+            <input
+              type="password"
+              placeholder="MT5 password"
+              value={form.password}
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+            />
+            <input
+              type="text"
+              placeholder="MT5 server (e.g. Exness-Real42; optional)"
+              value={form.server}
+              onChange={(e) => setForm((f) => ({ ...f, server: e.target.value }))}
+              className="w-full bg-black border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] tracking-wider focus:outline-none focus:border-[#00ff00] focus:shadow-[0_0_4px_rgba(0,255,0,0.4)]"
+            />
+            <div className="flex gap-2 pt-1">
+              <button onClick={handleAddBridge} disabled={!form.name.trim()} className="flex-1 border border-[#00ff00] text-[#00ff00] py-1 text-[10px] tracking-wider hover:bg-[#00ff0011] disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                [ ADD BRIDGE ]
+              </button>
+              <button onClick={cancelForm} className="border border-[#ff6600] text-[#ff6600] py-1 px-3 text-[10px] tracking-wider hover:bg-[#ff660011] transition-colors">
+                [ CANCEL ]
+              </button>
             </div>
           </div>
         ) : (
           <button
-              onClick={() => setAddOpen(true)}
-              className="mt-3 w-full flex items-center justify-center gap-2 border border-dashed border-[#00ff00]/60 text-[#00ff00]/80 py-3 px-4 text-xs hover:bg-[#00ff0008]"
-            >
-              <Plus className="w-3.5 h-3.5" /> Add broker
-            </button>
+            onClick={() => { setAddOpen(true); setEditingId(null); setForm(EMPTY_FORM); }}
+            className="mt-3 w-full flex items-center justify-center gap-2 border border-dashed border-[#00ff00]/60 text-[#00ff00]/80 py-2 text-[10px] tracking-wider hover:bg-[#00ff0008] hover:border-[#00ff00] hover:text-[#00ff00] transition-colors"
+          >
+            <Plus className="w-3 h-3" /> [ ADD BRIDGE ]
+          </button>
         )}
 
-        <div className="mt-3 text-[10px] text-[#00ff00] opacity-50 border-t border-[#00ff00] pt-2">
-          MT5 is the only supported broker. Orders, ticks, and history are sourced from the bridge process running inside the Windows VM (localhost:5000). See bridge/SETUP_RUNBOOK.md for VM provisioning.
+        <div className="mt-3 text-[10px] text-[#00ff00]/50 border-t border-[#00ff00]/40 pt-2 leading-relaxed">
+          One bridge runtime hosts one MT5 login at a time. <span className="text-[#00ff00]/70">[ USE ]</span> on any bridge re-logs the runtime with that bridge&apos;s credentials. The previously active bridge becomes IDLE. See <span className="text-[#ff6600]/80">bridge/SETUP_RUNBOOK.md</span> for VM provisioning.
         </div>
       </div>
     </div>

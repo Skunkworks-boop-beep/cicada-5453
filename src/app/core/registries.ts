@@ -86,14 +86,19 @@ const TF_MINOR = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1'] as const;
 const TF_SYNTH = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1'] as const;
 const TF_INDICES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'] as const;
 
-// ─── Default brokers: Deriv and eXness (standalone); MT5 add-on for live balance/positions ────────────────
+// ─── Default bridges. The MT5 bridge is the only execution path; the
+//     legacy IDs are kept so old persisted snapshots resolve their
+//     instrument.brokerId references without rewriting the whole
+//     instrument registry.
 export const BROKER_DERIV_ID = 'broker-deriv';
-export const BROKER_EXNESS_ID = 'broker-exness'; // MT5 add-on (no registry instruments; count from MT5 after connect)
-export const BROKER_EXNESS_API_ID = 'broker-exness-api'; // eXness: index CFDs (MT5 OHLC); fiat/crypto use Deriv in registry
+export const BROKER_EXNESS_ID = 'broker-exness'; // primary MT5 bridge — instrument registry routes through this id
+export const BROKER_EXNESS_API_ID = 'broker-exness-api'; // legacy id; stripped on hydration
 
 export const DEFAULT_BROKERS: BrokerConfig[] = [
-  // Stage 4: MT5 bridge is the only execution path.
-  { id: BROKER_EXNESS_ID, name: 'MT5', type: 'mt5', status: 'disconnected', config: {}, order: 0 },
+  // The primary bridge. Operators rename it ("Demo MT5", "Live Prop A1")
+  // via the Bridges panel; the id stays stable so instrument routing
+  // doesn't break.
+  { id: BROKER_EXNESS_ID, name: 'Primary MT5', type: 'mt5', status: 'disconnected', config: {}, order: 0 },
 ];
 
 // ─── Instrument registry ─────────────────────────────────────────────────────
