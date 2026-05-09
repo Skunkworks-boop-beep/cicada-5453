@@ -12,5 +12,4 @@ export * from './indicators';
 export * from './signals';
 export * from './config';
 export * from './api';
-export * from './derivApi';
 export * from './persistence';

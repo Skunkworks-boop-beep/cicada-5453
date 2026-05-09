@@ -7,15 +7,9 @@ import { useEffect, useState, useMemo } from 'react';
 import { useTradingStore } from '../store/TradingStore';
 import type { BrokerConfig, BrokerType } from '../core/types';
 import { BROKER_DERIV_ID, BROKER_EXNESS_ID, BROKER_EXNESS_API_ID } from '../core/registries';
-import {
-  getActiveSyntheticSymbols,
-  validateDerivSynthetics,
-  isConnected as derivIsConnected,
-  type DerivSyntheticGroup,
-  type DerivSyntheticValidation,
-} from '../core/derivApi';
+// Stage 7: Deriv API removed; the validation UI it powered is gone.
 import { getBridgeHealth, type BridgeHealth } from '../core/api';
-import { Server, Plus, Settings2, Loader2, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { Server, Plus, Settings2, Loader2, Wifi, WifiOff } from 'lucide-react';
 function statusColor(status: string) {
   switch (status) {
     case 'connected': return 'text-[#00ff00]';
@@ -26,12 +20,13 @@ function statusColor(status: string) {
 }
 
 function typeLabel(type: BrokerType) {
-  if (type === 'exness_api') return 'eXness API (data-only)';
+  if (type === 'exness_api') return 'eXness API (deprecated)';
   if (type === 'mt5') return 'MT5';
-  return 'Deriv API (data-only)';
+  return 'Deriv API (deprecated)';
 }
 
-const DERIV_GROUP_ORDER: DerivSyntheticGroup[] = [
+// Stage 7: Deriv groups no longer used; kept as a stub for any callers still referencing the constant.
+const DERIV_GROUP_ORDER: string[] = [
   'Volatility', 'Crash/Boom', 'Jump', 'Step', 'Range Break', 'World', 'Uncategorized',
 ];
 
@@ -42,8 +37,6 @@ export function BrokersManager() {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState({ name: '', type: 'mt5' as BrokerType, login: '', password: '', server: '', appId: '', apiKey: '', baseUrl: '' });
   const [derivApiResult, setDerivApiResult] = useState<Awaited<ReturnType<typeof getActiveSyntheticSymbols>> | null>(null);
-  const [derivValidationLoading, setDerivValidationLoading] = useState(false);
-  const [derivValidationError, setDerivValidationError] = useState<string | null>(null);
   // Stage 2A: bridge health pill (polled, no global store coupling)
   const [bridge, setBridge] = useState<BridgeHealth | null>(null);
   useEffect(() => {
@@ -57,40 +50,12 @@ export function BrokersManager() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  /** Validation is derived from current instruments + last API result so it updates when instruments change (e.g. after Add all). */
-  const derivValidation = useMemo((): DerivSyntheticValidation | null => {
-    if (!derivApiResult) return null;
-    return validateDerivSynthetics(instruments, derivApiResult);
-  }, [derivApiResult, instruments]);
-
-  const derivConnected = brokers.find((b) => b.id === BROKER_DERIV_ID)?.status === 'connected';
-
+  // Stage 7: Deriv validation panel removed; the API + instruments are gone.
   const isDefault = (id: string) => id === BROKER_DERIV_ID || id === BROKER_EXNESS_ID || id === BROKER_EXNESS_API_ID;
   const isMt5Addon = (id: string) => id === BROKER_EXNESS_ID;
   const instrumentCount = (brokerId: string) => instruments.filter((i) => i.brokerId === brokerId).length;
-  /** MT5 add-on: show 0 instruments until connected and fetched from MT5; eXness/Deriv show registry count. */
   const displayInstrumentCount = (b: BrokerConfig) =>
     b.id === BROKER_EXNESS_ID && b.status !== 'connected' ? 0 : instrumentCount(b.id);
-
-  const refreshDerivSynthetics = async () => {
-    const derivBroker = brokers.find((b) => b.id === BROKER_DERIV_ID);
-    const hasDerivCreds = derivBroker?.config.appId && derivBroker?.config.password;
-    if (!derivBroker || (!derivConnected && !hasDerivCreds)) return;
-    setDerivValidationError(null);
-    setDerivValidationLoading(true);
-    try {
-      if (derivConnected && !derivIsConnected()) {
-        await actions.connectBroker(BROKER_DERIV_ID);
-      }
-      const apiResult = await getActiveSyntheticSymbols();
-      setDerivApiResult(apiResult);
-    } catch (e) {
-      setDerivValidationError(e instanceof Error ? e.message : 'Failed to fetch Deriv symbols');
-      setDerivApiResult(null);
-    } finally {
-      setDerivValidationLoading(false);
-    }
-  };
 
   const handleConnect = async (b: BrokerConfig) => {
     if (b.type === 'exness_api') {
@@ -323,73 +288,7 @@ export function BrokersManager() {
           ))}
         </div>
 
-        {derivConnected && (
-          <div className="mt-3 p-3 border border-[#00ff00]/40 bg-black/30">
-            <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-              <span className="text-[#00ff00] text-[10px]">Deriv synthetic instruments (validated via API)</span>
-              <button
-                  onClick={refreshDerivSynthetics}
-                  disabled={derivValidationLoading}
-                  className="flex items-center gap-1 border border-[#00ff00] text-[#00ff00] px-2 py-1 text-[10px] hover:bg-[#00ff0011] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-all duration-200"
-                >
-                  <RefreshCw className={`w-3 h-3 ${derivValidationLoading ? 'animate-spin' : ''}`} />
-                  {derivValidationLoading ? 'Fetching…' : 'Refresh'}
-                </button>
-            </div>
-            {derivValidationError && (
-              <div className="text-[10px] text-[#ff4444] mb-2">{derivValidationError}</div>
-            )}
-            {derivValidation && derivApiResult && (
-              <>
-                <div className="text-[10px] border-b border-[#00ff00]/30 pb-2 mb-2">
-                  <div className="text-[#00ff00] font-medium mb-1">Instrument codes from Deriv API (use these in registry)</div>
-                  {DERIV_GROUP_ORDER.map((group) => {
-                    const apiCodes = derivApiResult.byGroup[group];
-                    if (!apiCodes?.length) return null;
-                    return (
-                      <div key={group} className="mb-1">
-                        <span className="text-[#00ff00]/90">{group}:</span>
-                        <span className="text-[#00ff00]/80 ml-1">{apiCodes.slice(0, 20).join(', ')}{apiCodes.length > 20 ? ` (+${apiCodes.length - 20} more)` : ''}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="text-[10px] space-y-1 mb-2">
-                  <div className="text-[#00ff00]/90 font-medium mb-1">Verification (registry vs API codes above)</div>
-                  {DERIV_GROUP_ORDER.map((group) => {
-                    const g = derivValidation.byGroup[group];
-                    if (!g || g.total === 0) return null;
-                    const ok = g.validated === g.total;
-                    return (
-                      <div key={group} className={`flex justify-between ${ok ? 'text-[#00ff00]' : 'text-[#ff6600]'}`}>
-                        <span>{group}:</span>
-                        <span>{g.validated}/{g.total} validated{g.missing.length ? ` (missing: ${g.missing.join(', ')})` : ''}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {derivValidation.apiSymbolsNotInApp.length > 0 && (
-                  <div className="text-[10px] border-t border-[#00ff00]/30 pt-2 mt-2 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[#ff6600]">On Deriv but not in app ({derivValidation.apiSymbolsNotInApp.length}):</span>
-                    <button
-                        onClick={() => {
-                          if (!derivValidation) return;
-                          actions.addInstrumentsFromDeriv(derivValidation.apiSymbolsNotInApp);
-                          // Validation updates automatically: it's derived from instruments + derivApiResult, and instruments just changed.
-                        }}
-                          className="border border-[#00ff00] text-[#00ff00] px-2 py-0.5 text-[10px] hover:bg-[#00ff0011] transition-all duration-200"
-                        >
-                          Add all to Instrument Registry
-                        </button>
-                    </div>
-                    <span className="text-[#00ff00]/80 block">{derivValidation.apiSymbolsNotInApp.slice(0, 15).join(', ')}{derivValidation.apiSymbolsNotInApp.length > 15 ? ` +${derivValidation.apiSymbolsNotInApp.length - 15} more` : ''}</span>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
+        {/* Stage 7: Deriv synthetic-instrument validation panel removed (Deriv API gone). */}
 
         {addOpen ? (
           <div className="mt-3 p-3 border border-[#ff6600]/50 space-y-2">

@@ -7,7 +7,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useTradingStore } from '../store/TradingStore';
 import { getMt5Prices } from '../core/api';
-import { getDerivSymbolQuote } from '../core/derivApi';
 import { BROKER_DERIV_ID, BROKER_EXNESS_ID, BROKER_EXNESS_API_ID } from '../core/registries';
 import { LIVE_FEED_INTERVAL_MS } from '../core/config';
 
@@ -49,23 +48,23 @@ export function LiveSpreadPanel() {
   const lastSuccessAt = useRef<number>(0);
   const [isStale, setIsStale] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
-  const derivConnected = state.brokers.some((b) => b.id === BROKER_DERIV_ID && b.status === 'connected');
+  // Stage 7: Deriv removed; spread sources are MT5 only.
   const mt5Connected = state.brokers.some((b) => b.type === 'mt5' && b.status === 'connected');
   const exnessApiConnected = state.brokers.some((b) => b.type === 'exness_api' && b.status === 'connected');
-  const hasConnection = derivConnected || mt5Connected || exnessApiConnected;
+  const hasConnection = mt5Connected || exnessApiConnected;
 
   const symbol = selected
     ? (selected.symbol ?? selected.id.replace(/^inst-/, '').toUpperCase().replace(/-/g, '/')).replace(/\//g, '')
     : null;
 
-  const useDeriv = selected?.brokerId === BROKER_DERIV_ID && derivConnected;
+  const useDeriv = selected?.brokerId === BROKER_DERIV_ID && false;
   const useMt5 = (selected?.brokerId === BROKER_EXNESS_ID || selected?.brokerId === BROKER_EXNESS_API_ID) && (mt5Connected || exnessApiConnected);
 
   const fetchPrices = useCallback(async () => {
     if ((!useDeriv && !useMt5) || !symbol) return false;
     try {
       if (useDeriv) {
-        const q = await getDerivSymbolQuote(symbol);
+        const q = await Promise.resolve(null);
         if (q && (q.bid > 0 || q.ask > 0)) {
           setBid(q.bid);
           setAsk(q.ask);

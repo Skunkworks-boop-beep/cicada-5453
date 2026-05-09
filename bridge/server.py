@@ -57,6 +57,28 @@ class HealthResponse(BaseModel):
     account: Optional[str] = None
 
 
+class LoginRequest(BaseModel):
+    """Stage 7: real broker authentication.
+
+    Lets the dashboard's login form actually authenticate against the
+    broker rather than just probe the bridge. The previous architecture
+    expected MT5 to log in once at VM startup; this endpoint adds runtime
+    re-authentication so the operator can switch accounts without
+    rebooting the VM."""
+    login: int
+    password: str
+    server: str = ""
+
+
+class LoginResponse(BaseModel):
+    success: bool
+    account: Optional[str] = None
+    server: str = ""
+    company: str = ""
+    retcode: int = 0
+    error: Optional[str] = None
+
+
 class AccountResponse(BaseModel):
     """Stage 2B fix C: real account snapshot from ``mt5.account_info()``.
 
@@ -197,6 +219,34 @@ def health() -> HealthResponse:
         status="ok",
         mt5_connected=info is not None,
         account=(str(getattr(info, "login", "")) if info is not None else None),
+    )
+
+
+@app.post("/login", response_model=LoginResponse)
+def login(req: LoginRequest) -> LoginResponse:
+    """Authenticate against the broker by calling ``mt5.login(account,
+    password, server)`` at runtime. Replaces the boot-time-only auth
+    pattern so the dashboard's login form actually validates."""
+    m = _require_mt5()
+    try:
+        ok = m.login(int(req.login), password=req.password, server=req.server or "")
+    except Exception as e:
+        return LoginResponse(success=False, retcode=-1, error=f"mt5.login raised: {e}")
+    if not ok:
+        err = m.last_error()
+        msg = err[1] if isinstance(err, tuple) and len(err) > 1 else str(err)
+        retcode = int(err[0]) if isinstance(err, tuple) and err and isinstance(err[0], int) else -1
+        return LoginResponse(success=False, retcode=retcode, error=str(msg))
+    info = m.account_info()
+    if info is None:
+        return LoginResponse(success=False, retcode=-1, error="login succeeded but account_info is None")
+    return LoginResponse(
+        success=True,
+        account=str(getattr(info, "login", "")),
+        server=str(getattr(info, "server", "") or ""),
+        company=str(getattr(info, "company", "") or ""),
+        retcode=0,
+        error=None,
     )
 
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router';
 import { CicadaLogo } from '../components/CicadaLogo';
 import { InstrumentManager } from '../components/InstrumentManager';
@@ -11,7 +11,11 @@ import { BotRegistry } from '../components/BotRegistry';
 import { LivePortfolio } from '../components/LivePortfolio';
 import { BrokersManager } from '../components/BrokersManager';
 import { TickerBar } from '../components/TickerBar';
-import { PriceChart } from '../components/PriceChart';
+// Stage 7: Recharts is ~530 KB on its own. Lazy-load PriceChart so the
+// dashboard's first paint doesn't pay for it. The Suspense fallback
+// renders the same green-on-black placeholder shape the loading state
+// uses elsewhere — palette stays in zone.
+const PriceChart = lazy(() => import('../components/PriceChart').then((m) => ({ default: m.PriceChart })));
 import { LiveSpreadPanel } from '../components/LiveSpreadPanel';
 import { TerminalHeader } from '../components/TerminalHeader';
 import { DriftBanner } from '../components/DriftBanner';
@@ -150,7 +154,13 @@ export default function Dashboard() {
               <div className="space-y-2 sm:space-y-3 min-w-0">
                 <InstrumentSelector />
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  <PriceChart />
+                  <Suspense fallback={
+                    <div className="border border-[#00ff00]/40 bg-black p-3 text-[10px] text-[#00ff00]/60 tracking-wider">
+                      [ LOADING CHART... ]
+                    </div>
+                  }>
+                    <PriceChart />
+                  </Suspense>
                   <LiveSpreadPanel />
                 </div>
                 <BacktestEngine />

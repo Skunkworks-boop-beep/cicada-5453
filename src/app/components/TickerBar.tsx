@@ -2,7 +2,6 @@ import { useEffect, useState, useRef } from 'react';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 import { useTradingStore } from '../store/TradingStore';
 import { getMt5Prices } from '../core/api';
-import { getDerivPortfolioPrices } from '../core/derivApi';
 import { BROKER_DERIV_ID } from '../core/registries';
 import { LIVE_FEED_INTERVAL_MS } from '../core/config';
 
@@ -19,10 +18,10 @@ export function TickerBar() {
   const [prevPrices, setPrevPrices] = useState<Record<string, number>>({});
   const tickersRef = useRef<Ticker[]>([]);
   tickersRef.current = tickers;
-  const derivConnected = state.brokers.some((b) => b.id === BROKER_DERIV_ID && b.status === 'connected');
+  // Stage 7: Deriv removed; only MT5 (and the legacy eXness REST flag) source data.
   const mt5Connected = state.brokers.some((b) => b.type === 'mt5' && b.status === 'connected');
   const exnessApiConnected = state.brokers.some((b) => b.type === 'exness_api' && b.status === 'connected');
-  const hasConnection = derivConnected || mt5Connected || exnessApiConnected;
+  const hasConnection = mt5Connected || exnessApiConnected;
 
   // Old behaviour fetched the first 5 registry instruments by index even when
   // the user wasn't trading them — burned the broker rate limit fast. Now we
@@ -52,9 +51,9 @@ export function TickerBar() {
       return;
     }
     const fetchPrices = async () => {
-      if (derivConnected) {
+      if (false) {
         try {
-          const prices = await getDerivPortfolioPrices();
+          const prices = await Promise.resolve({});
           const list: Ticker[] = [];
           for (const sym of uniqueSymbols) {
             const q = prices[sym] ?? prices[sym.toUpperCase()];
@@ -99,9 +98,9 @@ export function TickerBar() {
       }
     };
     fetchPrices();
-    const interval = setInterval(fetchPrices, derivConnected ? 8_000 : LIVE_FEED_INTERVAL_MS);
+    const interval = setInterval(fetchPrices, false ? 8_000 : LIVE_FEED_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [hasConnection, derivConnected, mt5Connected, exnessApiConnected, uniqueSymbols.join(',')]);
+  }, [hasConnection, false, mt5Connected, exnessApiConnected, uniqueSymbols.join(',')]);
 
   useEffect(() => {
     if (tickers.length > 0) {

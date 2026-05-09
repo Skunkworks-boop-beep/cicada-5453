@@ -106,6 +106,14 @@ class MT5Bridge:
         inside the VM (the bridge returns 503 in that case)."""
         return self.http("GET", f"{self.base_url}/account", None, self.timeout_s)
 
+    def login(self, *, account: int, password: str, server: str = "") -> dict:
+        """Stage 7: runtime re-authentication. Calls the bridge's
+        ``POST /login`` which in turn calls ``mt5.login()`` inside the
+        VM. Returns the response payload (``success`` + account info or
+        retcode + error). Caller decides what to do with success=False."""
+        body = {"login": int(account), "password": password, "server": server}
+        return self.http("POST", f"{self.base_url}/login", body, self.timeout_s)
+
     def place_order(
         self,
         *,

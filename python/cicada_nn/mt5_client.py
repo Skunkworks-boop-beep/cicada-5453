@@ -66,30 +66,48 @@ def connect(
     path: str | None = None,
     timeout: int = 60000,
 ) -> tuple[bool, dict[str, Any]]:
-    """Verify the bridge can reach a logged-in MT5 inside the VM.
+    """Authenticate against the broker by POSTing /login on the bridge.
 
-    The VM's MT5 manages broker credentials (the bridge spec puts login at
-    VM startup, not on every API call). This function therefore reduces to
-    a health check + credential cache for the legacy ``reconnect()`` path.
+    Stage 7: previously this was just a /health probe — the broker
+    credentials typed in the form were cached locally but never sent to
+    MT5. Now the bridge runs ``mt5.login(account, password, server)``
+    at runtime so the form does real broker authentication. Failure
+    reasons (wrong password, invalid server, account not authorised)
+    bubble up via the ``retcode`` + ``error`` fields.
     """
     remember_credentials(login, password, server, path)
+    # Coerce login to an int — the bridge contract is integer login.
     try:
-        h = get_bridge().health_check()
+        login_int = int(str(login).strip())
+    except (TypeError, ValueError):
+        return False, {"error": "login must be a numeric account number"}
+
+    try:
+        resp = get_bridge().login(account=login_int, password=password, server=server or "")
     except BridgeUnreachableError as e:
         return False, {"error": f"bridge unreachable: {e}"}
     except BridgeError as e:
         return False, {"error": str(e)}
-    if not h.get("mt5_connected"):
-        return False, {"error": "bridge ok but MT5 not connected inside VM"}
+
+    if not isinstance(resp, dict) or not resp.get("success"):
+        retcode = int(resp.get("retcode", -1)) if isinstance(resp, dict) else -1
+        msg = (resp.get("error") if isinstance(resp, dict) else None) or "broker login failed"
+        return False, {"error": msg, "retcode": retcode}
+
+    # Now pull the full account snapshot for the dashboard's broker pill.
+    try:
+        info = get_bridge().get_account()
+    except BridgeError:
+        info = {}
     return True, {
-        "login": h.get("account") or login,
-        "server": server or "",
-        "balance": 0.0,
-        "equity": 0.0,
-        "currency": "",
-        "leverage": 0,
-        "trade_allowed": True,
-        "company": "",
+        "login": resp.get("account") or info.get("login") or login_int,
+        "server": resp.get("server") or info.get("server") or (server or ""),
+        "balance": float(info.get("balance") or 0.0),
+        "equity": float(info.get("equity") or 0.0),
+        "currency": str(info.get("currency") or ""),
+        "leverage": int(info.get("leverage") or 0),
+        "trade_allowed": bool(info.get("trade_allowed", True)),
+        "company": resp.get("company") or info.get("company") or "",
     }
 
 

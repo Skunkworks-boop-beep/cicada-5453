@@ -107,8 +107,11 @@ import {
   type JobRecord,
 } from '../core/api';
 import { getPositions, postPositions } from '../core/positionsApi';
-import { connect as derivConnect, disconnect as derivDisconnect, isConnected as derivIsConnected, getBalance as derivGetBalance, getDerivAccountSnapshot, getDerivPortfolioPrices, getDerivProfitTable, getDerivSymbolQuote, getDerivSymbolSpreads, getDerivSymbolSpreadFromTick, getDerivPositions, ourSymbolToDerivKeys, resolveDerivApiSymbolToRegistry, setOnDerivConnectionLost } from '../core/derivApi';
-import { getExnessAccount, getExnessPositions } from '../core/exnessApi';
+// Stage 7: Deriv + eXness imports removed. The system is MT5-bridge-only.
+// Every callsite below was either deleted or replaced with the empty/
+// disconnected default. brokerId still parameterises the call shape but
+// is never matched against BROKER_DERIV_ID / BROKER_EXNESS_API_ID — those
+// constants are kept in registries.ts as historical anchors.
 import {
   DEFAULT_BACKTEST_PARAM_COMBOS_LIMIT,
   DEFAULT_RESEARCH_PARAM_TUNE_MAX_RISK,
@@ -1214,7 +1217,7 @@ function getActions(): TradingStoreActions {
         const bid = inst?.brokerId ?? (inst?.type === 'synthetic_deriv' ? BROKER_DERIV_ID : BROKER_EXNESS_API_ID);
         return bid === BROKER_EXNESS_ID || bid === BROKER_EXNESS_API_ID;
       });
-      const derivConnected = brokers.some((b) => b.id === BROKER_DERIV_ID && b.status === 'connected') && derivIsConnected();
+      const derivConnected = brokers.some((b) => b.id === BROKER_DERIV_ID && b.status === 'connected') && false;
       const mt5Connected = brokers.some((b) => b.type === 'mt5' && b.status === 'connected');
       if (needsDeriv && !derivConnected) {
         research = { ...research, status: 'failed', error: 'Deriv must be connected for research. Connect in Brokers panel.', log: [...research.log, { level: 'error', message: 'Deriv not connected. Connect broker before running research.' }] };
@@ -2896,7 +2899,7 @@ function getActions(): TradingStoreActions {
       }
 
       if (state.dataSource === 'deriv') {
-        getDerivPortfolioPrices()
+        Promise.resolve({})
           .then((prices) => {
             const tryPrice = (p: Position) => {
               const sym = resolveSymbol(p);
@@ -2911,7 +2914,7 @@ function getActions(): TradingStoreActions {
                   : 0;
                 return { currentPrice, pnl, pnlPercent };
               }
-              for (const key of ourSymbolToDerivKeys(sym)) {
+              for (const key of [sym]) {
                 const q = prices[key] ?? prices[key.toUpperCase()];
                 if (q != null) {
                   const currentPrice = p.type === 'LONG' ? q.bid : q.ask;
@@ -2973,7 +2976,7 @@ function getActions(): TradingStoreActions {
 
       if (derivBroker) {
         try {
-          const spreads = await getDerivSymbolSpreads();
+          const spreads = await Promise.resolve({});
           const usedDerivInstrumentIds = new Set<string>();
           for (const i of instruments) {
             if (i.brokerId === BROKER_DERIV_ID && i.selected) usedDerivInstrumentIds.add(i.id);
@@ -3008,7 +3011,7 @@ function getActions(): TradingStoreActions {
             const sym = (i.symbol ?? '').replace(/\s/g, '_').replace(/\//g, '').trim();
             if (!sym) continue;
             try {
-              const live = await getDerivSymbolSpreadFromTick(sym);
+              const live = await Promise.resolve(null);
               if (live != null && live > 0) {
                 instruments = instruments.map((inst) =>
                   inst.id === i.id ? { ...inst, spread: live } : inst
@@ -3412,7 +3415,7 @@ function getActions(): TradingStoreActions {
               x.id === id ? { ...x, status: 'error', lastError: 'eXness API requires an API key from Personal Area → API.' as const, config: { ...x.config, ...config } } : x
             );
           } else {
-            const account = await withTimeout(getExnessAccount(apiKey, baseUrl));
+            const account = await withTimeout(Promise.resolve(null));
             setBalance(account.balance, 'mt5');
             setServerEquity(account.equity ?? null);
             setTimeout(() => getActions().syncBrokerPositions().catch((e) => {
@@ -3477,7 +3480,7 @@ function getActions(): TradingStoreActions {
             for (let attempt = 0; attempt < 2; attempt++) {
               try {
                 if (attempt > 0) await new Promise((r) => setTimeout(r, 800));
-                await withTimeout(derivConnect(appId, token));
+                await withTimeout(Promise.resolve(null));
                 lastErr = null;
                 break;
               } catch (e) {
@@ -3485,7 +3488,7 @@ function getActions(): TradingStoreActions {
                 if (attempt === 1) throw lastErr;
               }
             }
-            const { balance: bal } = await withTimeout(getDerivAccountSnapshot(true));
+            const { balance: bal } = await withTimeout(Promise.resolve(null));
             setBalance(bal, 'deriv'); // Balance from Deriv API only (no mock)
             setTimeout(() => getActions().syncBrokerPositions().catch((e) => {
               if (typeof console !== 'undefined' && console.warn) {
@@ -3534,7 +3537,7 @@ function getActions(): TradingStoreActions {
         (b.type === 'deriv_api' && portfolio.dataSource === 'deriv') ||
         (b.type === 'mt5' && portfolio.dataSource === 'mt5') ||
         (b.type === 'exness_api' && portfolio.dataSource === 'mt5');
-      if (b.type === 'deriv_api') derivDisconnect();
+      if (b.type === 'deriv_api') void 0;
       if (isSource) {
         setBalance(0, 'none');
         /** Clear closed trades when broker disconnects — avoid showing stale/wrong P/L from persisted state. */
@@ -3559,9 +3562,9 @@ function getActions(): TradingStoreActions {
     async syncPortfolioBalance() {
       const connected = brokers.find((b) => b.status === 'connected');
       if (!connected) return;
-      if (connected.type === 'deriv_api' && derivIsConnected()) {
+      if (connected.type === 'deriv_api' && false) {
         try {
-          const { balance: bal, prices } = await getDerivAccountSnapshot(true);
+          const { balance: bal, prices } = await Promise.resolve(null);
           setBalance(bal, 'deriv');
           const portfolio = getPortfolioState();
           if (portfolio.positions.length > 0) {
@@ -3583,7 +3586,7 @@ function getActions(): TradingStoreActions {
                   : 0;
                 return { currentPrice, pnl, pnlPercent };
               }
-              for (const key of ourSymbolToDerivKeys(sym)) {
+              for (const key of [sym]) {
                 const q = prices[key] ?? prices[key.toUpperCase()];
                 if (q != null) {
                   const currentPrice = p.type === 'LONG' ? q.bid : q.ask;
@@ -3610,17 +3613,8 @@ function getActions(): TradingStoreActions {
         return;
       }
       if (connected.type === 'exness_api') {
-        const apiKey = (connected.config.apiKey ?? '').toString().trim();
-        if (!apiKey) return;
-        try {
-          const account = await getExnessAccount(apiKey, (connected.config.baseUrl ?? '').trim() || undefined);
-          setBalance(account.balance, 'mt5');
-          setServerEquity(account.equity ?? null);
-        } catch (e) {
-          if (typeof console !== 'undefined' && console.warn) {
-            console.warn('[TradingStore] getExnessAccount failed:', e);
-          }
-        }
+        // Stage 7: eXness REST API removed. The broker-row exists only as
+        // a historical config option; no data fetched.
         return;
       }
       if (connected.type === 'mt5') {
@@ -3671,7 +3665,7 @@ function getActions(): TradingStoreActions {
         const baseUrl = (connected.config.baseUrl ?? '').trim() || undefined;
         if (!apiKey) return;
         try {
-          const rows = await getExnessPositions(apiKey, baseUrl);
+          const rows = await Promise.resolve([]);
           const positions: Position[] = rows.map((p, i) => {
             const type: Position['type'] = (p.type === 'buy' ? 'LONG' : 'SHORT') as Position['type'];
             const entryPrice = Number(p.price_open) || 0;
@@ -3795,14 +3789,14 @@ function getActions(): TradingStoreActions {
         emit();
         return;
       }
-      if (connected.type === 'deriv_api' && derivIsConnected()) {
+      if (connected.type === 'deriv_api' && false) {
         try {
           const derivRegistrySymbols = instruments
             .filter((i) => i.type === 'synthetic_deriv' && i.brokerId === BROKER_DERIV_ID)
             .map((i) => i.symbol);
-          const rows = await getDerivPositions();
+          const rows = await Promise.resolve([]);
           const newKeys = new Set(rows.map((r) => String(r.contractId ?? '')));
-          let profitTable = await getDerivProfitTable(200);
+          let profitTable = await Promise.resolve([]);
           const closedCount = portfolio.positions.filter((p) => {
             const m = p.id.match(/^pos-deriv-(\d+)-\d+$/);
             const key = m ? m[1] : null;
@@ -3810,7 +3804,7 @@ function getActions(): TradingStoreActions {
           }).length;
           if (closedCount > 0 && profitTable.length === 0) {
             await new Promise((r) => setTimeout(r, 800));
-            profitTable = await getDerivProfitTable(200);
+            profitTable = await Promise.resolve([]);
           }
           const derivProfitByContractId = new Map(profitTable.map((t) => [t.contract_id, t]));
           await reconcileClosedPositions(portfolio.positions, newKeys, (id) => {
@@ -3823,7 +3817,7 @@ function getActions(): TradingStoreActions {
           updateClosedTradesFromDerivProfitTable(profitTable);
           const existingPositions = portfolio.positions;
           const positions: Position[] = rows.length > 0 ? rows.map((r, i) => {
-            const registrySym = resolveDerivApiSymbolToRegistry(r.instrument, derivRegistrySymbols);
+            const registrySym = null;
             const inst = registrySym ? instruments.find((instr) => instr.symbol === registrySym) : null;
             const instrumentId = inst?.id ?? resolveInstrumentId(r.instrument);
             const cid = r.contractId ?? i;
@@ -3957,7 +3951,8 @@ export function TradingStoreProvider({ children }: { children: React.ReactNode }
       const actions = getActions();
       actions.loadPersisted();
       actions.ensureFullInstrumentRegistry(); // restore full registry if count was ever stuck (e.g. 54)
-      setOnDerivConnectionLost(() => actions.disconnectBroker(BROKER_DERIV_ID));
+      // Stage 7: setOnDerivConnectionLost was a no-op shim; the live
+      // pipeline uses the bridge for everything, no Deriv WS to lose.
       window.addEventListener('beforeunload', () => {
         persistNow();
       });
