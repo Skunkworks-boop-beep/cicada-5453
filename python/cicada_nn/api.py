@@ -2355,7 +2355,6 @@ def backtest_run_stream(req: BacktestRunRequest):
                     prefer_htf_regime=getattr(req, "prefer_htf_regime", None),
                     instrument_types=getattr(req, "instrument_types", None) or None,
                     max_workers=max_workers,
-                    job_id=job.job_id,
                 )
                 if use_parallel
                 else run_server_backtest_stream(
