@@ -243,13 +243,20 @@ def is_reachable(timeout_s: float = 1.0) -> bool:
         cached_ok = _REACHABLE_CACHE.get("ok")
         if cached_ok is not None and now < float(_REACHABLE_CACHE.get("expires") or 0.0):
             return bool(cached_ok)
+    # Save/restore the singleton's timeout — previously this overwrote
+    # ``bridge.timeout_s = timeout_s`` and left it clamped to ~1s, so any
+    # subsequent large /history response (e.g. 50k M1 bars ≈ 5 MB, ~1s)
+    # timed out and surfaced as a spurious "No data" error in /mt5/ohlc.
     bridge = get_bridge()
+    original_timeout = bridge.timeout_s
     try:
         bridge.timeout_s = timeout_s
         bridge.health_check()
         ok = True
     except BridgeError:
         ok = False
+    finally:
+        bridge.timeout_s = original_timeout
     with _REACHABLE_LOCK:
         _REACHABLE_CACHE["ok"] = ok
         _REACHABLE_CACHE["expires"] = now + _REACHABLE_TTL_S
