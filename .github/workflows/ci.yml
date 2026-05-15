@@ -34,7 +34,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r python/requirements.txt
-          pip install pytest psutil
+          # Test-only deps: pytest + psutil for the suite, httpx because
+          # fastapi.testclient.TestClient (test_backward_validation_api.py)
+          # imports it and FastAPI no longer bundles it.
+          pip install pytest psutil httpx
 
       - name: Run full pytest suite
         env:
