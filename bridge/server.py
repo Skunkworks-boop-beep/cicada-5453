@@ -519,7 +519,9 @@ def history(symbol: str, timeframe: str, from_ts: int, to_ts: int) -> list[BarRo
         # caller gets whatever the broker actually retains.
         latest = getattr(m, "copy_rates_from_pos", None)
         if latest is not None:
-            raw = latest(sym, tf, 0, 100_000)
+            # MT5 caps copy_rates_from_pos per call: 50k works across timeframes
+            # but 100k returns ``(-2, "Invalid params")`` on synthetic indices.
+            raw = latest(sym, tf, 0, 50_000)
             if raw is not None:
                 raw = [r for r in raw if from_ts <= int(r["time"]) <= to_ts]
     if raw is None:
