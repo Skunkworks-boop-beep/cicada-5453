@@ -23,6 +23,7 @@ then reflects the stub's presence and the endpoints exercise the same shape.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -36,7 +37,7 @@ MT5_AVAILABLE = False
 try:
     import MetaTrader5 as mt5  # type: ignore
     MT5_AVAILABLE = True
-except ImportError:
+except Exception:
     mt5 = None  # type: ignore
 
 
@@ -245,7 +246,18 @@ def _utc_iso(epoch: int | float | None) -> str:
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="CICADA-5453 MT5 Bridge", version="0.1.0")
+
+@contextlib.asynccontextmanager
+async def _lifespan(application: FastAPI):  # noqa: ARG001
+    if MT5_AVAILABLE and mt5 is not None:
+        mt5.initialize()
+    yield
+    if MT5_AVAILABLE and mt5 is not None:
+        with contextlib.suppress(Exception):
+            mt5.shutdown()
+
+
+app = FastAPI(title="CICADA-5453 MT5 Bridge", version="0.1.0", lifespan=_lifespan)
 
 
 @app.get("/health", response_model=HealthResponse)
