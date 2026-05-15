@@ -24,7 +24,12 @@ import json
 
 
 DEFAULT_BASE_URL = os.environ.get("CICADA_BRIDGE_URL", "http://localhost:5000")
-DEFAULT_TIMEOUT_S = float(os.environ.get("CICADA_BRIDGE_TIMEOUT_S", "5.0"))
+DEFAULT_TIMEOUT_S = float(os.environ.get("CICADA_BRIDGE_TIMEOUT_S", "30.0"))
+# Note: 5s was too tight for /history. A 50k-bar M1 response is ~5 MB and
+# takes ~1s on its own; when the backtest fires 5 timeframes in parallel
+# they serialise inside the MT5 session and the tail call waits ~5s — just
+# enough to trip the old default. 30s gives the burst headroom without
+# masking a genuinely stuck bridge (reachability probe still uses 1s).
 
 # Stage 2B fix A (architectural review §3.1): cache the reachability probe
 # for a short TTL so daemon hot-paths (``mt5_client.is_connected`` /
