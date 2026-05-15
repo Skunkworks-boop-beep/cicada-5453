@@ -312,10 +312,18 @@ class ExecutionDaemon:
 
     def _tick_once(self, state: BotState) -> None:
         cfg = state.config
+        # Record every tick attempt — not just events — so /daemon/list and the
+        # dashboard can show "yes, the daemon is alive" even when no signal
+        # fired. Previously last_tick_ts only updated inside _publish_event, so
+        # a bot that hit a silent return (insufficient bars, predict failure,
+        # ensemble NEUTRAL with no caller of _publish_event upstream) looked
+        # frozen at last_tick_ts=0 forever.
+        state.last_tick_ts = time.time()
         portfolio = self._portfolio()
         bar_window = cfg.nn_detection_bar_window or 60
         bars = self._bars(cfg.instrument_id, cfg.nn_detection_timeframe or cfg.primary_timeframe, max(100, bar_window + 20))
         if not bars or len(bars) < 50:
+            logger.info("daemon tick bot=%s skipped: insufficient bars (%d)", cfg.bot_id, len(bars) if bars else 0)
             return
         regime_series = detect_regime_series(bars, lookback=50)
         regime = regime_series[-1] if regime_series else "unknown"
@@ -366,6 +374,7 @@ class ExecutionDaemon:
         try:
             pred = self._predict(cfg, bars, regime, confidence, price)
         except Exception as e:
+            logger.warning("daemon tick bot=%s predict failed: %s", cfg.bot_id, e, exc_info=True)
             EVENT_BUS.publish("log", bot_id=cfg.bot_id, level="warning", message=f"predict failed: {e}")
             return
         nn_action = int(pred.get("action", 2))

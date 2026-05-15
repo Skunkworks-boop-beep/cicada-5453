@@ -157,9 +157,14 @@ def fetch_bars_for_daemon(instrument_id: str, timeframe: str, count: int) -> lis
 
     try:
         bars = mt5_client.get_rates(sym, timeframe, count=count)
+        n = len(bars) if bars else 0
+        # Temporary diagnostic: surface per-fetch result so a silent "no bars"
+        # path doesn't look like a hung daemon. Drop to .debug once the
+        # deploy/hydrate symbol-map path is verified in the wild.
+        logger.info("daemon fetch inst=%s sym=%r tf=%s count=%d → %d bars", instrument_id, sym, timeframe, count, n)
         return bars or []
     except Exception as e:
-        logger.debug("daemon bars fetch failed inst=%s sym=%s tf=%s: %s", instrument_id, sym, timeframe, e)
+        logger.warning("daemon bars fetch failed inst=%s sym=%r tf=%s: %s", instrument_id, sym, timeframe, e)
         return []
 
 
@@ -228,8 +233,13 @@ def daemon_predict(
     det_path = ckpt_dir / f"instrument_detection_{safe}.pt"
     pt_path = ckpt_dir / f"instrument_bot_nn_{safe}.pt"
 
-    # Detection model (V3) preferred when available.
+    # Detection model (V3) preferred when available. Wrapped in try/except
+    # so a stale or mis-architected checkpoint (e.g. an older save with
+    # ``net.0/3/6`` keys when the current StrategyDetectionNN expects
+    # ``conv_blocks/attn/positional``) doesn't crash the daemon tick on every
+    # iteration — we fall through to the tabular path or final NEUTRAL.
     if det_path.exists() and len(bars) >= (cfg.nn_detection_bar_window or 60):
+      try:
         from .bar_features import BarFeatureConfig, window_features
         from .model import build_detection_model_from_checkpoint
 
@@ -280,6 +290,16 @@ def daemon_predict(
             "size_multiplier": float(0.5 + 1.5 * raw[0]),
             "safe_to_use": True,
         }
+      except (RuntimeError, KeyError) as e:
+        # Stale checkpoint (architecture mismatch / missing keys) — log once
+        # per tick at WARNING (the daemon will keep ticking) and fall through
+        # to the tabular path. The fix is to rebuild the bot, which produces a
+        # fresh checkpoint compatible with the current model class.
+        logger.warning(
+            "daemon predict: detection checkpoint %s is incompatible (%s); "
+            "falling back to tabular. Rebuild the bot to refresh.",
+            det_path.name, type(e).__name__,
+        )
 
     # Tabular fallback when no detection checkpoint exists yet.
     if pt_path.exists() and cfg.nn_feature_vector:
