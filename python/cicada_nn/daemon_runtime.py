@@ -136,7 +136,13 @@ def fetch_bars_for_daemon(instrument_id: str, timeframe: str, count: int) -> lis
       4. Otherwise return [] and let the daemon skip the tick.
     """
     sym = get_instrument_symbol_map().get(instrument_id) or _legacy_symbol_from_id(instrument_id)
-    sym = (sym or "").replace("/", "").upper()
+    # Preserve case + internal spaces — MT5 synthetic-index names like
+    # 'Volatility 10 Index' are case-sensitive, and uppercasing them turned
+    # every daemon tick on synthetics into a no-op (empty bars → early return),
+    # which is why deployed bots on synthetic indices appeared to "wait
+    # forever" with last_tick_ts=0 and no events ever fired. Only forex
+    # slashes are normalised; everything else passes through.
+    sym = (sym or "").replace("/", "").strip()
     if not sym:
         return []
 
