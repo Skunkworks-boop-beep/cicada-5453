@@ -736,6 +736,12 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
         return 0
     daemon = get_daemon()
     launched = 0
+    # Build the instrument→symbol map from the bots we're about to hydrate.
+    # Without this the daemon's bar fetcher falls back to _legacy_symbol_from_id,
+    # which mangles synthetic instrument ids ('inst-deriv-r10' → 'DERIVR10')
+    # and breaks every deployed bot on a synthetic until the FE pushes the map
+    # — which it doesn't currently do. See fetch_bars_for_daemon.
+    symbol_map = dict(get_instrument_symbol_map())
     for raw in bots:
         try:
             if (raw.get("status") or "").lower() != "deployed":
@@ -777,10 +783,14 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
             )
             if not cfg.bot_id or not cfg.instrument_id:
                 continue
+            if cfg.instrument_symbol:
+                symbol_map[cfg.instrument_id] = cfg.instrument_symbol
             daemon.deploy(cfg)
             launched += 1
         except Exception as e:
             logger.warning("daemon hydrate skip bot=%r: %s", raw.get("id"), e)
+    if symbol_map:
+        set_instrument_symbol_map(symbol_map)
     if launched:
         logger.info("daemon hydrated %d bot(s) from storage", launched)
     return launched

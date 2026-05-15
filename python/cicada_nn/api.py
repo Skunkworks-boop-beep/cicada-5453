@@ -323,6 +323,17 @@ def daemon_deploy(req: DaemonDeployRequest):
             default_risk_reward_ratio=req.default_risk_reward_ratio,
         ),
     )
+    # The daemon's bar fetcher resolves instrument_id → broker symbol via the
+    # instrument-symbol map. That map is empty by default and the legacy
+    # fallback (inst-deriv-r10 → DERIVR10) is wrong for synthetics, so register
+    # this bot's mapping here. /daemon/symbols still exists for bulk updates;
+    # this just covers the common case where a deploy is the only signal we
+    # get about the FE's instrument set.
+    if req.instrument_symbol:
+        from .daemon_runtime import get_instrument_symbol_map
+        current = dict(get_instrument_symbol_map())
+        current[req.instrument_id] = req.instrument_symbol
+        set_instrument_symbol_map(current)
     get_daemon().deploy(cfg)
     return {"deployed": cfg.bot_id}
 
