@@ -220,6 +220,7 @@ def _build_stub_mt5(account_login: str = "12345", balance: float = 10_000.0) -> 
         positions_get=positions_get,
         copy_ticks_range=copy_ticks_range,
         copy_rates_range=copy_rates_range,
+        copy_rates_from_pos=lambda sym, _tf, _pos, n: copy_rates_range(sym, _tf, datetime.fromtimestamp(time.time() - n * 60, tz=timezone.utc), datetime.fromtimestamp(time.time(), tz=timezone.utc)),
         account_info=account_info,
         login=login,
         last_error=last_error,

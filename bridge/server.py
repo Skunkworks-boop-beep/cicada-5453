@@ -510,6 +510,18 @@ def history(symbol: str, timeframe: str, from_ts: int, to_ts: int) -> list[BarRo
     raw = m.copy_rates_range(sym, tf,
                              datetime.fromtimestamp(from_ts, tz=timezone.utc),
                              datetime.fromtimestamp(to_ts, tz=timezone.utc))
+    if raw is None or len(raw) == 0:
+        # Some brokers (e.g. Deriv synthetic indices on a freshly-attached
+        # terminal) return None from copy_rates_range when the requested
+        # window starts before the broker's earliest available bar — even
+        # if plenty of data exists inside the window. Fall back to fetching
+        # the most recent bars and filter to the requested range so the
+        # caller gets whatever the broker actually retains.
+        latest = getattr(m, "copy_rates_from_pos", None)
+        if latest is not None:
+            raw = latest(sym, tf, 0, 100_000)
+            if raw is not None:
+                raw = [r for r in raw if from_ts <= int(r["time"]) <= to_ts]
     if raw is None:
         return []
     out: list[BarRow] = []

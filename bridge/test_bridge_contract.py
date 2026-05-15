@@ -87,6 +87,7 @@ def _build_stub_mt5() -> types.SimpleNamespace:
         positions_get=positions_get,
         copy_ticks_range=copy_ticks_range,
         copy_rates_range=copy_rates_range,
+        copy_rates_from_pos=lambda *_a, **_k: state["rates"],
         account_info=account_info,
         last_error=last_error,
         symbol_select=lambda *_a, **_k: True,
