@@ -35,6 +35,13 @@ MT5_POINT_FALLBACK = 1e-5
 _TF_NAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1")
 TF_MAP: dict[str, str] = {n: n for n in _TF_NAMES}
 
+# Seconds per bar for each timeframe — used to size the from_ts window when
+# get_rates is called with count but no explicit dates.
+_TF_SECONDS: dict[str, int] = {
+    "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+    "H1": 3600, "H4": 14400, "D1": 86400, "W1": 604800,
+}
+
 # Exness/MT5 symbol suffixes by account type. The bridge owns symbol
 # resolution now, but the constants are exported for any callers still
 # iterating them; keep until they're proven dead.
@@ -283,8 +290,12 @@ def get_rates(
     else:
         now = datetime.now(timezone.utc)
         # Pull a wide window; bridge will trim to whatever MT5 actually has.
+        # Window must scale with the timeframe — using a flat ``count * 60``
+        # asks for 1-minute-spaced data regardless of TF, so e.g. H1 count=100
+        # asks for "100 minutes of hourly bars" and the bridge returns at
+        # most one or two bars.
         to_ts = int(now.timestamp())
-        from_ts = to_ts - count * 60  # rough lower bound; bridge filters
+        from_ts = to_ts - count * _TF_SECONDS.get(tf, 60)
     try:
         rows = get_bridge().get_history(symbol=symbol, timeframe=tf, from_ts=from_ts, to_ts=to_ts)
     except BridgeError as e:
