@@ -1318,6 +1318,33 @@ def build_bot(req: BuildRequest):
                     "trained_at_iso": datetime.now(timezone.utc).isoformat(),
                     "models": detection_models,
                 }, mf, indent=2)
+
+            # Build + persist the geometric map alongside the detection model so
+            # GET /map/geometric/{symbol} stops returning 404 on the dashboard.
+            # Uses whichever timeframe in this build has the most bars (more
+            # bars → finer support/resistance + volume-profile resolution).
+            # Best-effort: a map build failure doesn't fail the whole /build.
+            inst_symbol = next(
+                (r.get("instrument_symbol") for r in rows
+                 if r.get("instrumentId") == instrument_id and r.get("instrument_symbol")),
+                None,
+            )
+            if inst_symbol:
+                best_key = max(
+                    (k for k in bars_by_key if k.startswith(f"{instrument_id}|") and bars_by_key[k]),
+                    key=lambda k: len(bars_by_key[k]),
+                    default=None,
+                )
+                if best_key:
+                    try:
+                        from .geometric_map import build_geometric_map, save_geometric_map
+                        gmap = build_geometric_map(bars_by_key[best_key], symbol=inst_symbol)
+                        gmap_path = save_geometric_map(gmap, _MAP_OUT_DIR)
+                        logger.info("built geometric map for %s from %s (%d bars) → %s",
+                                    inst_symbol, best_key.split("|", 1)[1], len(bars_by_key[best_key]),
+                                    gmap_path.name)
+                    except Exception as e:  # noqa: BLE001 — non-fatal
+                        logger.warning("geometric_map build failed for %s: %s", inst_symbol, e)
             first_tf = sorted(detection_models.keys())[0]
             first = detection_models[first_tf]
             feat_dim = 64
