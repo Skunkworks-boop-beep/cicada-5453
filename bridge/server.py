@@ -193,6 +193,33 @@ def _require_mt5() -> Any:
     return mt5
 
 
+def _clean_symbol(symbol: str) -> str:
+    """Strip surrounding whitespace + forex slashes, PRESERVING case.
+
+    MT5 synthetic-index names ('Volatility 10 Index', 'Boom 1000 Index')
+    are case-sensitive — the previous ``.upper()`` turned them into symbols
+    MT5 reports as unknown. Internal spaces are kept; only ``EUR/USD``-style
+    slashes are removed."""
+    return symbol.replace("/", "").strip()
+
+
+def _select_symbol(m: Any, symbol: str) -> str:
+    """Clean the symbol and ensure it's selected in Market Watch.
+
+    ``copy_rates_range`` / ``symbol_info_tick`` return nothing for symbols
+    that aren't in Market Watch, and synthetic indices are not selected by
+    default. ``symbol_select(sym, True)`` adds the symbol; a False return
+    means it doesn't exist on this account, so we 404 with a clear message
+    instead of silently returning an empty series."""
+    sym = _clean_symbol(symbol)
+    if not sym:
+        raise HTTPException(status_code=400, detail="empty symbol")
+    select = getattr(m, "symbol_select", None)
+    if select is not None and not select(sym, True):
+        raise HTTPException(status_code=404, detail=f"symbol {sym!r} not found on this account")
+    return sym
+
+
 def _direction_to_order_type(direction: str) -> int:
     m = _require_mt5()
     return int(m.ORDER_TYPE_BUY if direction == "LONG" else m.ORDER_TYPE_SELL)
@@ -290,7 +317,7 @@ def account() -> AccountResponse:
 @app.post("/order/place", response_model=OrderPlaceResponse)
 def order_place(req: OrderPlaceRequest) -> OrderPlaceResponse:
     m = _require_mt5()
-    sym = req.symbol.replace("/", "").strip().upper()
+    sym = _clean_symbol(req.symbol)
     tick = m.symbol_info_tick(sym)
     if tick is None:
         return OrderPlaceResponse(success=False, retcode=-1, error=f"symbol {sym} not found")
@@ -421,7 +448,7 @@ def tick_now(symbol: str) -> LiveTick:
     SL/TP checks. Wraps ``mt5.symbol_info_tick(symbol)`` — orders of magnitude
     cheaper than ``/ticks`` for the daemon's hot path."""
     m = _require_mt5()
-    sym = symbol.replace("/", "").strip().upper()
+    sym = _select_symbol(m, symbol)
     t = m.symbol_info_tick(sym)
     if t is None:
         raise HTTPException(status_code=404, detail=f"symbol {sym} not found or has no tick")
@@ -442,7 +469,7 @@ def tick_now(symbol: str) -> LiveTick:
 @app.get("/ticks", response_model=list[TickRow])
 def ticks(symbol: str, from_ts: int, to_ts: int) -> list[TickRow]:
     m = _require_mt5()
-    sym = symbol.replace("/", "").strip().upper()
+    sym = _select_symbol(m, symbol)
     if hasattr(m, "copy_ticks_range"):
         raw = m.copy_ticks_range(sym, datetime.fromtimestamp(from_ts, tz=timezone.utc),
                                  datetime.fromtimestamp(to_ts, tz=timezone.utc),
@@ -464,7 +491,7 @@ def ticks(symbol: str, from_ts: int, to_ts: int) -> list[TickRow]:
 @app.get("/history", response_model=list[BarRow])
 def history(symbol: str, timeframe: str, from_ts: int, to_ts: int) -> list[BarRow]:
     m = _require_mt5()
-    sym = symbol.replace("/", "").strip().upper()
+    sym = _select_symbol(m, symbol)
     tf = _TF_MAP.get(timeframe.upper())
     if tf is None:
         raise HTTPException(status_code=400, detail=f"unknown timeframe {timeframe}")

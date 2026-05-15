@@ -2956,13 +2956,13 @@ function getActions(): TradingStoreActions {
         const mt5Instruments = instruments.filter(
           (i) => i.brokerId === BROKER_EXNESS_ID || i.brokerId === BROKER_EXNESS_API_ID
         );
-        const symbols = mt5Instruments.map((i) => (i.symbol ?? '').replace(/\s/g, '').replace('/', '').trim().toUpperCase()).filter(Boolean);
+        const symbols = mt5Instruments.map((i) => (i.symbol ?? '').replace('/', '').trim()).filter(Boolean);
         if (symbols.length > 0) {
           const res = await getMt5SymbolSpreads(symbols);
           if ('spreads' in res && Object.keys(res.spreads).length > 0) {
             const spreadBySymbol = res.spreads;
             instruments = instruments.map((i) => {
-              const sym = (i.symbol ?? '').replace(/\s/g, '').replace('/', '').trim().toUpperCase();
+              const sym = (i.symbol ?? '').replace('/', '').trim();
               const live = spreadBySymbol[sym];
               if (live != null && live > 0 && (i.brokerId === BROKER_EXNESS_ID || i.brokerId === BROKER_EXNESS_API_ID)) {
                 return { ...i, spread: live };

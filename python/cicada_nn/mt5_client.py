@@ -306,14 +306,33 @@ def get_rates(
 
 
 def get_symbol_spreads(symbols: list[str]) -> dict[str, float]:
-    """Live spread fetch is not currently exposed on the bridge.
+    """Live spread per symbol, sourced from the bridge's ``/tick`` endpoint.
 
-    Spec Phase 2b puts spread data on the per-coordinate execution-quality
-    map (built from real ticks). For the dashboard's spread strip we'd
-    add ``/symbol/spread`` to the bridge in a follow-up. Until then this
-    returns an empty dict and callers degrade gracefully (the legacy code
-    already handled the "MT5 not available" zero result)."""
-    return {}
+    The bridge already exposes ``spread`` (ask - bid, in price terms) on
+    every tick snapshot, so we reuse that rather than adding a dedicated
+    endpoint — the same source ``get_prices`` uses. Returns {} for symbols
+    the bridge can't resolve and on bridge-unreachable; callers treat an
+    absent key as 'no live spread' (the backtest then falls back to its
+    configured default spread)."""
+    if not symbols:
+        return {}
+    out: dict[str, float] = {}
+    bridge = get_bridge()
+    for sym in symbols:
+        try:
+            t = bridge.get_tick(symbol=str(sym))
+        except (BridgeUnreachableError, BridgeError):
+            continue
+        if not isinstance(t, dict):
+            continue
+        spread = t.get("spread")
+        if spread is None:
+            bid, ask = t.get("bid"), t.get("ask")
+            if bid is None or ask is None:
+                continue
+            spread = float(ask) - float(bid)
+        out[str(sym)] = max(0.0, float(spread or 0.0))
+    return out
 
 
 def get_prices(symbols: list[str]) -> dict[str, dict[str, float]]:

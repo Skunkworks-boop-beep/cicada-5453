@@ -2091,7 +2091,7 @@ def mt5_tick(symbol: str):
     handling. Stage 9: tick-aware execution."""
     if not mt5_client.is_connected():
         return {"tick": None, "error": "MT5 not connected"}
-    sym = (symbol or "").replace("/", "").strip().upper()
+    sym = (symbol or "").replace("/", "").strip()
     if not sym:
         return {"tick": None, "error": "invalid symbol"}
     t = mt5_client.get_tick(sym)
@@ -2117,7 +2117,7 @@ def mt5_ohlc(
     """
     if not mt5_client.is_connected():
         return {"error": "MT5 not connected", "bars": None}
-    sym = symbol.replace("/", "").strip().upper()
+    sym = symbol.replace("/", "").strip()
     if not sym:
         return {"error": "Invalid symbol", "bars": None}
     df = dateFrom.strip() if dateFrom else None

@@ -89,6 +89,7 @@ def _build_stub_mt5() -> types.SimpleNamespace:
         copy_rates_range=copy_rates_range,
         account_info=account_info,
         last_error=last_error,
+        symbol_select=lambda *_a, **_k: True,
     )
     stub._state = state  # type: ignore[attr-defined]
     return stub

@@ -911,7 +911,7 @@ export async function getMt5SymbolSpreads(
 ): Promise<{ spreads: Record<string, number> } | { error: string }> {
   if (symbols.length === 0) return { spreads: {} };
   try {
-    const q = symbols.map((s) => s.replace(/\s/g, '')).filter(Boolean).join(',');
+    const q = symbols.map((s) => s.trim()).filter(Boolean).join(',');
     const res = await fetch(
       `${getNnApiBaseUrl()}/mt5/symbols_spread?symbols=${encodeURIComponent(q)}`,
       { signal: AbortSignal.timeout(5000) }
@@ -930,7 +930,7 @@ export async function getMt5Prices(
 ): Promise<{ prices: Record<string, { bid: number; ask: number }> } | { error: string }> {
   if (symbols.length === 0) return { prices: {} };
   try {
-    const q = symbols.map((s) => s.replace(/\s/g, '')).filter(Boolean).join(',');
+    const q = symbols.map((s) => s.trim()).filter(Boolean).join(',');
     const res = await fetch(
       `${getNnApiBaseUrl()}/mt5/prices?symbols=${encodeURIComponent(q)}`,
       { signal: AbortSignal.timeout(5000) }

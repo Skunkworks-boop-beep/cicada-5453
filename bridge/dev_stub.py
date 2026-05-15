@@ -223,6 +223,7 @@ def _build_stub_mt5(account_login: str = "12345", balance: float = 10_000.0) -> 
         account_info=account_info,
         login=login,
         last_error=last_error,
+        symbol_select=lambda *_a, **_k: True,
     )
     return stub
 
