@@ -235,6 +235,7 @@ class Reconciler:
         # actually hold", so it's the right place to publish the snapshot.
         try:
             from .risk import PositionLite
+            from . import mt5_client
             from .daemon_runtime import (
                 get_portfolio_snapshot,
                 set_portfolio_snapshot,
@@ -260,9 +261,31 @@ class Reconciler:
                     risk_amount=abs(entry - float(p.get("sl") or entry)) * size,
                     pnl=float(p.get("profit") or 0.0),
                 ))
+
+            # Refresh real account equity from MT5 — previously the daemon's
+            # equity defaulted to whatever positions.json had at boot ($10k)
+            # and never updated. Position sizing math (risk_amount, exposure
+            # caps, $50 minimum) was running on the wrong number. Track our
+            # own running peak so drawdown_pct reflects live equity, not
+            # a value the frontend would need to push.
+            equity = current.equity
+            try:
+                acc = mt5_client.get_account()
+                if isinstance(acc, dict):
+                    candidate = acc.get("equity") if acc.get("equity") is not None else acc.get("balance")
+                    if candidate is not None:
+                        candidate = float(candidate)
+                        if candidate > 0:
+                            equity = candidate
+            except Exception:  # noqa: BLE001 — never let account fetch poison reconcile
+                pass
+
+            self._peak_equity = max(getattr(self, "_peak_equity", equity), equity)
+            drawdown_pct = max(0.0, (self._peak_equity - equity) / self._peak_equity) if self._peak_equity > 0 else 0.0
+
             set_portfolio_snapshot(
-                equity=current.equity,
-                drawdown_pct=current.drawdown_pct,
+                equity=equity,
+                drawdown_pct=drawdown_pct,
                 positions=positions,
             )
         except Exception:  # noqa: BLE001 — never let the publish poison reconcile
