@@ -953,6 +953,7 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
                 ),
                 max_positions=int(raw.get("maxPositions") or 2),
                 strategy_ids=list(raw.get("strategyIds") or []),
+                bot_timeframes=list(raw.get("timeframes") or []),
                 nn_feature_vector=list(raw.get("nnFeatureVector") or []),
                 nn_detection_timeframe=raw.get("nnDetectionTimeframe"),
                 nn_detection_bar_window=raw.get("nnDetectionBarWindow"),

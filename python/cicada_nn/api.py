@@ -282,6 +282,10 @@ class DaemonDeployRequest(BaseModel):
     # means "no strategy" — the daemon will emit a neutral strategy_signal
     # so the ensemble relies on the NN only.
     strategy_ids: list[str] = []
+    # Timeframes this bot was trained on; scope selector intersects allowed
+    # scopes with mode-timeframes ∩ this list so a bot trained on H1-W1
+    # can't auto-select SCALPING (M1-M5).
+    bot_timeframes: list[str] = []
     nn_feature_vector: list[float] = []
     nn_detection_timeframe: str | None = None
     nn_detection_bar_window: int | None = None
@@ -321,6 +325,7 @@ def daemon_deploy(req: DaemonDeployRequest):
         allowed_scopes=list(req.allowed_scopes) if req.allowed_scopes else ["scalp", "day", "swing"],
         max_positions=req.max_positions,
         strategy_ids=list(req.strategy_ids),
+        bot_timeframes=list(req.bot_timeframes),
         nn_feature_vector=list(req.nn_feature_vector),
         nn_detection_timeframe=req.nn_detection_timeframe,
         nn_detection_bar_window=req.nn_detection_bar_window,

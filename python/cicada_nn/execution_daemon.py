@@ -86,6 +86,11 @@ class BotRuntimeConfig:
     # multi-strategy aggregation. Empty list means "no strategy configured" —
     # the daemon will fall back to a neutral signal rather than guess.
     strategy_ids: list[str] = field(default_factory=list)
+    # Timeframes this bot was BUILT on — the scope selector intersects
+    # ``allowed_scopes`` with the modes whose TRADE_MODES[s].timeframes
+    # overlap this list, so a bot trained on H1-W1 can't suddenly trade
+    # SCALPING (M1-M5). Empty = no constraint (legacy bots).
+    bot_timeframes: list[str] = field(default_factory=list)
     nn_feature_vector: list[float] = field(default_factory=list)
     nn_detection_timeframe: Optional[str] = None
     nn_detection_bar_window: Optional[int] = None
@@ -288,6 +293,21 @@ class ExecutionDaemon:
             return cfg.fixed_scope if cfg.fixed_scope in cfg.allowed_scopes else None
 
         candidates = list(cfg.allowed_scopes) if cfg.allowed_scopes else ["scalp", "day", "swing"]
+        # Timeframe binding (spec §4: each mode is defined for specific TFs).
+        # A bot trained on H1-W1 should not be allowed to SCALP (M1-M5) just
+        # because the regime selector scores scalp high — the model has no
+        # signal at those timeframes. Intersect candidates with modes whose
+        # TRADE_MODES[*].timeframes overlap the bot's training timeframes.
+        if cfg.bot_timeframes:
+            bot_tfs = {t.upper() for t in cfg.bot_timeframes}
+            scope_to_style = {"scalp": "scalping", "day": "day",
+                              "swing": "swing", "position": "swing"}
+            compat: list[str] = []
+            for s in candidates:
+                rules = TRADE_MODES.get(scope_to_style.get(s, s))
+                if rules and (set(rules.timeframes) & bot_tfs):
+                    compat.append(s)
+            candidates = compat
         # Soft drawdown gates (mirror DEFAULT_SCOPE_SELECTOR_CONFIG defaults).
         if drawdown_pct >= 0.20:
             return None
@@ -573,6 +593,13 @@ class ExecutionDaemon:
             stop=try_result.stop_loss,
             target=try_result.take_profit,
             reason=decision.reason,
+            # Expose the ACTUAL executed style (rules.style — what the
+            # validator gated against, may be "scalping" or "day" etc.)
+            # AND the active scope (what the scope selector chose, may
+            # differ from cfg.scope). Lets the dashboard show the real
+            # mode used for this trade instead of the bot's static config.
+            style=rules.style,
+            active_scope=active_scope,
             order=order,
         )
 
