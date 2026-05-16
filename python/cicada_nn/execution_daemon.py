@@ -444,7 +444,14 @@ class ExecutionDaemon:
             nn_action=nn_action,
             nn_confidence=nn_conf,
             strategy_signal=strat,
-            strategy_reliability=0.6,
+            # 0.7 (was 0.6) — a fired strategy is meaningful enough to clear
+            # day mode's 0.65 confidence_threshold on its own when the NN
+            # abstains. With abstention-aware ensemble weighting (risk.py),
+            # strategy-alone scores 1.0 × 0.7 = 0.7 → passes day, fails
+            # sniper (0.80) which is correct architecturally — sniper
+            # demands joint conviction. Trade-mode thresholds in spec §4
+            # are the source of truth here.
+            strategy_reliability=0.7,
             regime_confidence=confidence,
         )
         if decision.action == "NEUTRAL":
@@ -522,7 +529,16 @@ class ExecutionDaemon:
             entry_price=price,
             stop_loss=try_result.stop_loss,
             take_profit=try_result.take_profit,
-            confidence=nn_conf,
+            # Use the ENSEMBLE's combined confidence — not the NN's raw
+            # confidence. validate_order's per-mode gate (signal.confidence
+            # vs rules.confidence_threshold, spec §4) tests "how confident
+            # is the decision system", and the ensemble IS the decision
+            # system. Previously the daemon passed nn_conf, which means
+            # a strategy-only SHORT decision (NN abstaining at 0.42) would
+            # be gated against the NN's NEUTRAL probability — guaranteed
+            # to fail the day-mode 0.65 floor even when the strategy
+            # fired with 0.7 reliability.
+            confidence=float(decision.confidence),
         )
         validation = validate_order(
             rules,
