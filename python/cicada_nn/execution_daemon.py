@@ -471,7 +471,14 @@ class ExecutionDaemon:
             target_daily_vol_pct=cfg.target_daily_vol_pct,
         )
         if not try_result.allowed:
-            self._publish_event(state, kind="risk_block", reason=try_result.reason, rule=try_result.rule_id)
+            self._publish_event(
+                state,
+                kind="risk_block",
+                reason=try_result.reason,
+                rule=try_result.rule_id,
+                style=rules.style,
+                active_scope=active_scope,
+            )
             return
 
         # ── Bug-3 fix: per-mode validation. The validator is pure and never

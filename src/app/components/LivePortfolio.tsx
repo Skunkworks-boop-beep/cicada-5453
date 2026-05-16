@@ -13,7 +13,10 @@ type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
 /** Portfolio price tick interval (slightly slower to reduce broker load). */
 const PORTFOLIO_TICK_MS = 5_000;
 /** Balance sync interval (avoid frequent balance requests). */
-const BALANCE_SYNC_MS = 10_000;
+// 2s — fast enough for P/L to track live fills, slow enough that the
+// bridge isn't hammered (each refresh = /mt5/account + /mt5/positions,
+// ~200 ms round-trip each on a healthy bridge).
+const BALANCE_SYNC_MS = 2_000;
 /** Position sync interval — detect closed positions and log them. */
 const POSITIONS_SYNC_MS = 15_000;
 
