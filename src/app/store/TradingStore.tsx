@@ -3636,6 +3636,12 @@ function getActions(): TradingStoreActions {
           if (acc.connected && acc.account) {
             setBalance(acc.account.balance, 'mt5');
             setServerEquity(acc.account.equity ?? null);
+            // Pull open positions on the same periodic cadence as the balance
+            // refresh — previously syncBrokerPositions only ran when the user
+            // clicked "Sync positions", so the Live Portfolio never saw the
+            // daemon's freshly-opened orders. Fire-and-forget so a positions
+            // fetch error doesn't poison the balance update.
+            getActions().syncBrokerPositions().catch(() => {});
             return;
           }
           const res = await postMt5Connect(login, password, server);
