@@ -225,6 +225,49 @@ class Reconciler:
             self._snapshot.tracked_position_count = len(tracked_by_ticket)
             self._snapshot.discrepancies = discrepancies
             self._snapshot.halts_raised += halts_raised_this_pass
+
+        # Land real MT5 positions into the daemon's portfolio cache. Without
+        # this the daemon's risk gates (_rule_max_per_instrument,
+        # _rule_max_per_bot, validate_order's n_concurrent) see ZERO existing
+        # positions every tick — so the per-instrument cap is silently
+        # bypassed and the bot pyramids into the same direction. Spec §7
+        # makes the reconciler the source-of-truth for "what positions do we
+        # actually hold", so it's the right place to publish the snapshot.
+        try:
+            from .risk import PositionLite
+            from .daemon_runtime import (
+                get_portfolio_snapshot,
+                set_portfolio_snapshot,
+                get_instrument_symbol_map,
+            )
+            current = get_portfolio_snapshot()
+            sym_to_inst = {sym: inst for inst, sym in get_instrument_symbol_map().items()}
+            positions: list[PositionLite] = []
+            for p in mt5_positions:
+                sym = str(p.get("symbol") or "")
+                ptype = str(p.get("direction") or ("LONG" if int(p.get("type") or 0) == 0 else "SHORT"))
+                inst_id = sym_to_inst.get(sym, sym)
+                entry = float(p.get("price_open") or p.get("open_price") or 0.0)
+                size = float(p.get("volume") or 0.0)
+                positions.append(PositionLite(
+                    instrument_id=inst_id,
+                    instrument_symbol=sym,
+                    instrument_type="synthetic_deriv" if "Index" in sym else "fiat",
+                    side=ptype if ptype in ("LONG", "SHORT") else "LONG",  # type: ignore[arg-type]
+                    size=size,
+                    entry_price=entry,
+                    current_price=float(p.get("price_current") or entry),
+                    risk_amount=abs(entry - float(p.get("sl") or entry)) * size,
+                    pnl=float(p.get("profit") or 0.0),
+                ))
+            set_portfolio_snapshot(
+                equity=current.equity,
+                drawdown_pct=current.drawdown_pct,
+                positions=positions,
+            )
+        except Exception:  # noqa: BLE001 — never let the publish poison reconcile
+            logger.exception("reconciler: portfolio cache publish failed")
+
         return self.snapshot()
 
     # ── Internals ─────────────────────────────────────────────────────
