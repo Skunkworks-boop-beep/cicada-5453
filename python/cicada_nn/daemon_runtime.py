@@ -321,11 +321,24 @@ def daemon_predict(
             raw = reg[0].detach().cpu().numpy()
         # V3 labels: 0=short, 1=long, 2=neutral → response action: 0=long, 1=short, 2=neutral.
         action = 1 if pred == 0 else (0 if pred == 1 else 2)
+        # Architectural note (spec §4): SL/TP are defined per-mode in ATR
+        # multiples. We map raw[1] → sl_atr_mult (0.3..4.0 ATR span — covers
+        # every mode's range) and raw[2] → tp_r (R-multiple of SL distance,
+        # 1..3R). _tick_once clamps sl_atr_mult to the active mode's
+        # [min_sl_atr, max_sl_atr] so the NN's hint is honoured when it falls
+        # in range and the mode's default is used when it doesn't — never a
+        # silent modification of a placed order.
+        #
+        # ``sl_pct`` is kept for backward compat with legacy callers; new code
+        # should prefer ``sl_atr_mult``. Until the regression head is trained
+        # (train_detection.py currently only fits the classification head),
+        # raw[1] is effectively random — the clamp is what makes this safe.
         return {
             "action": action,
             "confidence": conf,
-            "sl_pct": float(0.01 + 0.04 * raw[1]),
+            "sl_atr_mult": float(0.3 + 3.7 * raw[1]),
             "tp_r": float(1.0 + 2.0 * raw[2]),
+            "sl_pct": float(0.01 + 0.04 * raw[1]),  # legacy compat
             "size_multiplier": float(0.5 + 1.5 * raw[0]),
             "safe_to_use": True,
         }

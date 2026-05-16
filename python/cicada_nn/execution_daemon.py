@@ -384,6 +384,8 @@ class ExecutionDaemon:
             return
         nn_action = int(pred.get("action", 2))
         nn_conf = float(pred.get("confidence", 0.5))
+        # New (preferred) — SL as ATR multiplier, matches spec §4.
+        nn_sl_atr_mult = pred.get("sl_atr_mult")
         sl_pct = float(pred.get("sl_pct", cfg.risk_params.default_stop_loss_pct))
         tp_r = float(pred.get("tp_r", cfg.risk_params.default_risk_reward_ratio))
 
@@ -419,7 +421,16 @@ class ExecutionDaemon:
             return
 
         side = decision.action
-        stop_loss = price * (1 - sl_pct) if side == "LONG" else price * (1 + sl_pct)
+        # SL distance — prefer the NN's ATR-relative hint (clamped to the
+        # active mode's [min_sl_atr, max_sl_atr] so the order always satisfies
+        # spec §4) and fall back to the legacy %-of-price path when no
+        # mult is provided. atr_price = atr_pct × live_price (computed above).
+        if nn_sl_atr_mult is not None and atr_price > 0:
+            mult = max(rules.min_sl_atr, min(rules.max_sl_atr, float(nn_sl_atr_mult)))
+            sl_distance = mult * atr_price
+        else:
+            sl_distance = price * sl_pct
+        stop_loss = price - sl_distance if side == "LONG" else price + sl_distance
         try_result = try_open_position(
             portfolio=portfolio,
             bot_params=cfg.risk_params,
