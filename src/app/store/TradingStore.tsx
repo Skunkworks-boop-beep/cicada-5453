@@ -1069,6 +1069,18 @@ function _buildDaemonPayload(b: BotConfig): DaemonDeployPayload {
     primary_timeframe: primaryTf,
     scope,
     max_positions: b.maxPositions ?? 2,
+    // Optional per-instrument cap — undefined / null = no separate cap, the
+    // per-bot max_positions is the brake (NN handles the rest via Phase 2's
+    // position-state features).
+    max_positions_per_instrument: (b as { maxPositionsPerInstrument?: number | null })
+      .maxPositionsPerInstrument ?? null,
+    // CRITICAL: without strategy_ids the daemon's daemon_strategy_signal
+    // returns 0 (NEUTRAL) on every tick — the ensemble then has only the NN
+    // to vote and outputs NEUTRAL most ticks. This was the cause of the
+    // 268-NEUTRALs-in-a-row observation.
+    strategy_ids: Array.isArray(b.strategyIds) ? b.strategyIds : [],
+    // Phase 2 TF-bound scope selector reads this; empty list = no constraint.
+    bot_timeframes: Array.isArray(b.timeframes) ? b.timeframes : [],
     nn_feature_vector: Array.isArray(b.nnFeatureVector) ? b.nnFeatureVector : [],
     nn_detection_timeframe: b.nnDetectionTimeframe ?? null,
     nn_detection_bar_window: b.nnDetectionBarWindow ?? null,

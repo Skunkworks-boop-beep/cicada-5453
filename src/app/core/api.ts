@@ -340,6 +340,14 @@ export interface DaemonDeployPayload {
   primary_timeframe?: string;
   scope?: string;
   max_positions?: number;
+  /** Optional per-instrument cap; null → no separate cap (max_positions is brake). */
+  max_positions_per_instrument?: number | null;
+  /** Strategies this bot trades — primary is strategy_ids[0]. Without this the
+   * daemon falls back to a no-signal strategy and every tick returns NEUTRAL. */
+  strategy_ids?: string[];
+  /** Timeframes the bot was trained on. The scope selector intersects with
+   * mode-timeframes so a bot trained on H1-W1 can't auto-select scalp. */
+  bot_timeframes?: string[];
   nn_feature_vector?: number[];
   nn_detection_timeframe?: string | null;
   nn_detection_bar_window?: number | null;
