@@ -45,6 +45,7 @@ from .labeling import (
     triple_barrier_labels,
     mfe_mae_regression_labels,
     simulate_position_states,
+    exit_decision_samples,
     uniqueness_weights,
     label_distribution,
 )
@@ -519,6 +520,67 @@ def train_detection(
         _unwrap_model(model).load_state_dict(best_state)
     if len(X_val):
         _temperature_scale(model, X_val, y_val)
+
+    # ── Phase 3: train the exit head ───────────────────────────────────────
+    # Replaces the per-mode static / trail SL policy with a learned per-tick
+    # HOLD / EXIT decision. Trained after the main classification/regression
+    # epochs so the encoder is already well-formed; the exit head sees the
+    # encoded bar context PLUS 4 per-position scalars and outputs binary
+    # action. Best-effort — failure to assemble a useful sample set just
+    # leaves exit_head at its random init, and the daemon falls back to the
+    # mode rules (see _advance_open_positions).
+    try:
+        exit_scalars_np, exit_labels_np, exit_bar_idx_np = exit_decision_samples(
+            bars, labels, horizon_bars=horizon
+        )
+        if len(exit_labels_np) >= 64:
+            # Build the bar-window features for the in-trade bars referenced
+            # by the exit samples. Reuses feat_cfg + window_features so the
+            # encoder sees the same shape it was trained on.
+            ex_X = np.stack([
+                window_features(bars, int(idx), feat_cfg, position_state=pos_states_all[int(idx)])
+                for idx in exit_bar_idx_np
+            ]).astype(np.float32)
+            ex_X_t = torch.from_numpy(ex_X).float().to(DEVICE)
+            ex_scalars_t = torch.from_numpy(exit_scalars_np).float().to(DEVICE)
+            ex_y_t = torch.from_numpy(exit_labels_np).long().to(DEVICE)
+            # Class-rebalance because EXIT outnumbers HOLD when the horizon
+            # is short — Without weighting, the head learns "always HOLD".
+            counts = np.bincount(exit_labels_np, minlength=2).astype(np.float32)
+            inv = 1.0 / np.maximum(counts, 1.0)
+            ex_class_weights = torch.from_numpy(inv * (len(exit_labels_np) / 2.0)).float().to(DEVICE)
+            exit_loss_fn = nn.CrossEntropyLoss(weight=ex_class_weights, label_smoothing=0.05)
+            exit_opt = torch.optim.AdamW(
+                # Tune only the exit head + a slow finetune of the encoder
+                # so we don't destabilise the classification/regression
+                # heads' calibration.
+                list(_unwrap_model(model).exit_head.parameters()),
+                lr=lr,
+                weight_decay=0.01,
+            )
+            ex_dataset = TensorDataset(ex_X_t, ex_scalars_t, ex_y_t)
+            ex_loader = DataLoader(ex_dataset, batch_size=min(64, max(16, len(ex_dataset) // 4)), shuffle=True)
+            for ep in range(min(15, epochs)):
+                _unwrap_model(model).train()
+                for bx, bs, by in ex_loader:
+                    exit_opt.zero_grad()
+                    logits = _unwrap_model(model).forward_exit(bx, bs)
+                    loss = exit_loss_fn(logits, by)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        _unwrap_model(model).exit_head.parameters(), 1.0
+                    )
+                    exit_opt.step()
+            # Evaluate (on the same set — we don't currently hold out an
+            # exit-head val split; the encoder val_acc is what we report).
+            _unwrap_model(model).eval()
+            with torch.no_grad():
+                ex_pred = _unwrap_model(model).forward_exit(ex_X_t, ex_scalars_t).argmax(dim=1)
+                ex_acc = float((ex_pred == ex_y_t).float().mean().item())
+            print(f"  exit head trained: n={len(exit_labels_np)} acc={ex_acc:.3f} "
+                  f"(HOLD={int(counts[0])} EXIT={int(counts[1])})")
+    except Exception as _exit_train_err:  # noqa: BLE001 — exit-head training is best-effort
+        print(f"  exit head training skipped: {_exit_train_err}")
 
     # ── Promotion floor ────────────────────────────────────────────────────
     # The detection model is only useful if it beats random chance. With three

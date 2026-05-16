@@ -210,6 +210,102 @@ def get_instrument_symbol_map() -> dict[str, str]:
 # ── NN predict: call the existing /predict logic in-process ─────────────────
 
 
+def daemon_predict_exit(
+    cfg: BotRuntimeConfig,
+    bars: list[dict],
+    *,
+    side: str,
+    entry_price: float,
+    bars_since_open: int,
+    mfe_atr: float,
+    mae_atr: float,
+) -> str:
+    """Per-position HOLD / EXIT decision from the exit head (Phase 3).
+
+    Returns 'HOLD' or 'EXIT'. Falls back to 'HOLD' when no checkpoint
+    exists, the checkpoint lacks the exit head, or anything goes wrong —
+    so the daemon's per-mode SL/TP policy stays as the safety floor
+    (sl_tp_manager.evaluate_sl runs after this in _advance_open_positions
+    either way).
+
+    Mirrors daemon_predict's checkpoint-resolution logic (manifest first,
+    then legacy no-suffix); reuses the same exit_head added in Phase 3.
+    """
+    import os
+    from pathlib import Path
+    import numpy as np
+    import torch
+    from .train import _safe_instrument_id
+
+    if not bars or len(bars) < 50:
+        return "HOLD"
+
+    safe = _safe_instrument_id(cfg.instrument_id)
+    ckpt_dir = Path(os.environ.get("CICADA_NN_CHECKPOINTS", "checkpoints"))
+    manifest_path = ckpt_dir / f"instrument_detection_{safe}_manifest.json"
+    det_path: Path | None = None
+    det_bar_window: int | None = None
+    if manifest_path.exists():
+        try:
+            import json as _json
+            manifest = _json.loads(manifest_path.read_text())
+            models = (manifest.get("models") or {})
+            wanted_tf = str(cfg.nn_detection_timeframe or cfg.primary_timeframe or "").upper()
+            chosen = models.get(wanted_tf)
+            if chosen is None and models:
+                chosen = max(models.values(), key=lambda m: float(m.get("val_accuracy") or 0.0))
+            if isinstance(chosen, dict) and chosen.get("checkpoint_path"):
+                candidate = ckpt_dir / Path(chosen["checkpoint_path"]).name
+                if candidate.exists():
+                    det_path = candidate
+                    bw = chosen.get("bar_window")
+                    if bw is not None:
+                        det_bar_window = int(bw)
+        except Exception:
+            pass
+    if det_path is None:
+        legacy = ckpt_dir / f"instrument_detection_{safe}.pt"
+        if legacy.exists():
+            det_path = legacy
+    if det_path is None:
+        return "HOLD"
+
+    try:
+        from .bar_features import BarFeatureConfig, window_features
+        from .model import build_detection_model_from_checkpoint
+        ckpt = torch.load(det_path, map_location="cpu", weights_only=True)
+        bar_window = int(det_bar_window or ckpt.get("meta", {}).get("bar_window") or 60)
+        if len(bars) < bar_window:
+            return "HOLD"
+        feat_cfg = BarFeatureConfig(window=bar_window, include_context=True)
+        position_state = _build_inference_position_state(cfg, state_bars=bars)
+        feat = window_features(bars, len(bars) - 1, feat_cfg, position_state=position_state)
+        model = build_detection_model_from_checkpoint(ckpt)
+        model.load_state_dict(ckpt["model_state"], strict=True)
+        model.eval()
+        log24 = float(np.log1p(24.0))
+        age_norm = float(np.clip(1.0 - np.log1p(max(0, bars_since_open)) / log24, 0.0, 1.0))
+        direction = 1.0 if str(side).upper() == "LONG" else -1.0
+        scalars = torch.tensor(
+            [[float(np.clip(mfe_atr, 0.0, 10.0)),
+              float(np.clip(mae_atr, 0.0, 10.0)),
+              age_norm, direction]],
+            dtype=torch.float32,
+        )
+        with torch.no_grad():
+            logits = model.forward_exit(
+                torch.from_numpy(feat.astype(np.float32)).unsqueeze(0),
+                scalars,
+            )
+            pred = int(logits.argmax(dim=1).item())
+        return "EXIT" if pred == 1 else "HOLD"
+    except (RuntimeError, KeyError, AttributeError) as e:
+        # AttributeError when an older checkpoint has no exit_head; fall back
+        # silently to HOLD so the rule-based SL policy continues to manage.
+        logger.debug("daemon_predict_exit fell back to HOLD: %s", e)
+        return "HOLD"
+
+
 def _build_inference_position_state(cfg: BotRuntimeConfig, *, state_bars: list[dict]) -> dict:
     """Pull the daemon's view of current exposure for ``cfg``'s instrument.
 
@@ -844,6 +940,29 @@ def _live_close_position(ticket: int) -> None:
         raise RuntimeError(str(info.get("error") or f"close ticket {ticket} failed"))
 
 
+def _exit_predictor_for_daemon(cfg: BotRuntimeConfig, *, bars: Any, side: str,
+                                entry_price: float, bars_since_open: int,
+                                mfe_atr: float, mae_atr: float) -> str:
+    """Adapter from ExecutionDaemon._exit_predictor_fn's signature to
+    daemon_predict_exit. Re-fetches its own bars so the daemon doesn't need
+    to plumb them through per-position (the per-tick fetch is the SAME bars
+    the predict path already used; this is just a thin re-pull).
+    """
+    fetched = fetch_bars_for_daemon(
+        cfg.instrument_id,
+        cfg.nn_detection_timeframe or cfg.primary_timeframe,
+        max(100, (cfg.nn_detection_bar_window or 60) + 20),
+    )
+    return daemon_predict_exit(
+        cfg, fetched,
+        side=side,
+        entry_price=entry_price,
+        bars_since_open=bars_since_open,
+        mfe_atr=mfe_atr,
+        mae_atr=mae_atr,
+    )
+
+
 def get_daemon() -> ExecutionDaemon:
     global _DAEMON
     if _DAEMON is None:
@@ -856,6 +975,7 @@ def get_daemon() -> ExecutionDaemon:
             sl_event_fn=daemon_sl_event,
             tick_provider=_live_tick_provider,
             close_position_fn=_live_close_position,
+            exit_predictor_fn=_exit_predictor_for_daemon,
         )
     return _DAEMON
 

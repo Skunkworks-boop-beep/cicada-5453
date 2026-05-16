@@ -305,6 +305,20 @@ class StrategyDetectionNN(nn.Module):
             nn.Linear(cfg.hidden_dim, 3),
             nn.Sigmoid(),
         )
+        # Phase 3: continuous exit head — per-tick HOLD / EXIT decision for
+        # an open position. Replaces the per-mode STATIC / TRAIL_AFTER_1R /
+        # BE_THEN_TRAIL cascade in sl_tp_manager.py. Takes the encoded bar
+        # context PLUS 4 per-position scalars [mfe_atr, mae_atr, age_norm,
+        # direction_signed] so the head can reason about both market state
+        # and how the open trade is doing. Binary output (HOLD=0, EXIT=1);
+        # TIGHTEN_SL is a future 3-class refinement.
+        EXIT_POSITION_SCALARS = 4
+        self.exit_head = nn.Sequential(
+            nn.Linear(cfg.hidden_dim + EXIT_POSITION_SCALARS, cfg.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(cfg.hidden_dim, 2),
+        )
         self.log_temperature = nn.Parameter(torch.zeros(1))
 
     @property
@@ -347,6 +361,22 @@ class StrategyDetectionNN(nn.Module):
         logits = self.cls_head(h) / self.temperature
         reg = self.regression_head(h)
         return logits, reg
+
+    def forward_exit(
+        self, x: torch.Tensor, position_scalars: torch.Tensor
+    ) -> torch.Tensor:
+        """Per-position HOLD / EXIT decision.
+
+        Args:
+            x: bar-window feature batch, shape (B, feature_dim)
+            position_scalars: shape (B, 4) — [mfe_atr, mae_atr, age_norm,
+                direction_signed] where direction_signed = +1 (long) or -1 (short).
+
+        Returns logits (B, 2). argmax 0 → HOLD, 1 → EXIT.
+        """
+        h = self._encode(x)
+        combined = torch.cat([h, position_scalars], dim=1)
+        return self.exit_head(combined)
 
     @torch.no_grad()
     def forward_mc(

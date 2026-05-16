@@ -210,6 +210,109 @@ def simulate_position_states(
     return states, effective
 
 
+def exit_decision_samples(
+    bars: Sequence[dict],
+    classification_labels: np.ndarray,
+    *,
+    horizon_bars: int = 24,
+    hold_threshold: float = 1.10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build (per-bar) HOLD/EXIT training samples for the exit head.
+
+    For every bar j whose classification_label is directional (LONG=1, SHORT=0),
+    simulate a trade entered at j. Walk forward bar by bar through the
+    horizon. At each in-trade bar k, compute:
+
+        position_scalars[k] = [mfe_atr_so_far, mae_atr_so_far,
+                               age_norm, direction_signed]
+        label[k] = 1 (EXIT) if the best achievable pnl from k+1 onward
+                   is NOT meaningfully better than exiting right now
+                   (best_future ≤ current × hold_threshold), else 0 (HOLD).
+
+    Returned arrays:
+        scalars: shape (N, 4) — position state per (j, k) sample
+        labels:  shape (N,)   — 0=HOLD, 1=EXIT
+        bar_indices: shape (N,) — the k index into ``bars``; the caller
+            extracts window_features(bars, k) to pair with each scalar row.
+
+    "Meaningfully better" uses a 10% margin by default so the head doesn't
+    learn to always-hold on tiny upticks. The threshold is conservative:
+    biases toward EXIT when uncertain, which matches the spec's
+    rejection-never-modify philosophy (exit early, don't ride uncertain
+    moves)."""
+    n = len(bars)
+    scalars_list: list[list[float]] = []
+    labels_list: list[int] = []
+    bar_indices_list: list[int] = []
+
+    log24 = float(np.log1p(24.0))
+    for j in range(n - 1):
+        cls = int(classification_labels[j]) if j < len(classification_labels) else 2
+        if cls not in (0, 1):
+            continue
+        entry = float(bars[j].get("close") or 0.0)
+        if entry <= 0:
+            continue
+        atr = _atr_proxy(bars, j)
+        if atr <= 0:
+            continue
+        direction = 1.0 if cls == 1 else -1.0
+        end = min(n - 1, j + horizon_bars)
+        # Track MFE/MAE evolving through the trade.
+        mfe = 0.0
+        mae = 0.0
+        for k in range(j + 1, end + 1):
+            cur = float(bars[k].get("close") or entry)
+            hi = float(bars[k].get("high") or cur)
+            lo = float(bars[k].get("low") or cur)
+            if direction > 0:
+                bar_mfe = hi - entry
+                bar_mae = entry - lo
+            else:
+                bar_mfe = entry - lo
+                bar_mae = hi - entry
+            mfe = max(mfe, bar_mfe)
+            mae = max(mae, bar_mae)
+            # Current pnl in price terms (signed by direction):
+            current_pnl = (cur - entry) * direction
+            # Best future pnl achievable from k+1 onward (peak hindsight):
+            best_future = 0.0
+            for m in range(k + 1, end + 1):
+                fhi = float(bars[m].get("high") or 0.0)
+                flo = float(bars[m].get("low") or 0.0)
+                if direction > 0:
+                    best_future = max(best_future, fhi - entry)
+                else:
+                    best_future = max(best_future, entry - flo)
+            # Label: EXIT when holding doesn't get us a meaningfully better
+            # exit later. HOLD when there's clear upside still ahead.
+            if best_future <= max(current_pnl, 0.0) * hold_threshold:
+                label = 1  # EXIT
+            else:
+                label = 0  # HOLD
+            age_norm = float(np.clip(1.0 - np.log1p(k - j) / log24, 0.0, 1.0))
+            scalars_list.append([
+                float(np.clip(mfe / atr, 0.0, 10.0)),
+                float(np.clip(mae / atr, 0.0, 10.0)),
+                age_norm,
+                direction,
+            ])
+            labels_list.append(label)
+            bar_indices_list.append(k)
+
+    if not scalars_list:
+        return (
+            np.zeros((0, 4), dtype=np.float32),
+            np.zeros((0,), dtype=np.int64),
+            np.zeros((0,), dtype=np.int64),
+        )
+    return (
+        np.array(scalars_list, dtype=np.float32),
+        np.array(labels_list, dtype=np.int64),
+        np.array(bar_indices_list, dtype=np.int64),
+    )
+
+
 def mfe_mae_regression_labels(
     bars: Sequence[dict],
     class_labels: np.ndarray,

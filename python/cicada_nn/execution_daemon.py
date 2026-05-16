@@ -123,6 +123,11 @@ class PositionMeta:
     bars_since_open: int = 0
     partial_taken: bool = False
     ticket: Optional[int] = None
+    # Phase 3: running MFE/MAE since entry, in price units. Updated each tick
+    # in _advance_open_positions; fed into the exit head's position_scalars
+    # so the NN can reason about "we're up 2x ATR — should we lock in?"
+    mfe_price: float = 0.0
+    mae_price: float = 0.0
 
 
 @dataclass
@@ -175,6 +180,14 @@ class ExecutionDaemon:
         sl_event_fn: Optional[SLEventFn] = None,
         tick_provider: Optional[TickProviderFn] = None,
         close_position_fn: Optional[ClosePositionFn] = None,
+        # Phase 3: per-position HOLD/EXIT predictor. Called from
+        # _advance_open_positions for every open position; "EXIT" closes via
+        # close_position_fn. Returns "HOLD" by default (no checkpoint or
+        # exit head missing) so the per-mode SL/TP policy remains the
+        # safety floor.
+        exit_predictor_fn: Optional[
+            Callable[..., str]
+        ] = None,
     ):
         self._lock = threading.Lock()
         self._sl_event_fn: Optional[SLEventFn] = sl_event_fn
@@ -188,6 +201,7 @@ class ExecutionDaemon:
         self._submit_order = order_fn
         self._tick_provider: Optional[TickProviderFn] = tick_provider
         self._close_position_fn: Optional[ClosePositionFn] = close_position_fn
+        self._exit_predictor_fn: Optional[Callable[..., str]] = exit_predictor_fn
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -665,6 +679,54 @@ class ExecutionDaemon:
             return
         for ticket, meta in list(state.position_meta.items()):
             meta.bars_since_open += 1
+            # Update running MFE/MAE in price units. The exit head reads these
+            # normalised by ATR.
+            move = (current_price - meta.entry_price) * (1.0 if meta.side == "LONG" else -1.0)
+            if move > 0:
+                meta.mfe_price = max(meta.mfe_price, move)
+            else:
+                meta.mae_price = max(meta.mae_price, -move)
+
+            # Phase 3: ask the NN's exit head whether to close this position
+            # NOW. EXIT short-circuits the per-mode SL/TP policy (which still
+            # runs as a safety floor when the predictor says HOLD or fails).
+            if self._exit_predictor_fn is not None and self._close_position_fn is not None:
+                try:
+                    mfe_atr = meta.mfe_price / atr_price if atr_price > 0 else 0.0
+                    mae_atr = meta.mae_price / atr_price if atr_price > 0 else 0.0
+                    decision = self._exit_predictor_fn(
+                        state.config,
+                        bars=None,  # daemon_predict_exit re-fetches its own bars below
+                        side=meta.side,
+                        entry_price=meta.entry_price,
+                        bars_since_open=meta.bars_since_open,
+                        mfe_atr=mfe_atr,
+                        mae_atr=mae_atr,
+                    )
+                    if str(decision).upper() == "EXIT":
+                        try:
+                            self._close_position_fn(int(ticket))
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "exit head close failed bot=%s ticket=%s: %s",
+                                state.config.bot_id, ticket, e,
+                            )
+                        else:
+                            self._publish_event(
+                                state,
+                                kind="trade_close",
+                                ticket=ticket,
+                                reason="exit_head_signal",
+                                mfe_atr=round(mfe_atr, 3),
+                                mae_atr=round(mae_atr, 3),
+                                bars_since_open=meta.bars_since_open,
+                            )
+                            state.position_meta.pop(ticket, None)
+                            continue  # don't run SL trail for a closed position
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("exit_predictor_fn failed bot=%s ticket=%s: %s",
+                                 state.config.bot_id, ticket, e)
+
             life = PositionLifecycleState(
                 side=meta.side,
                 entry_price=meta.entry_price,

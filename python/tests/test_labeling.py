@@ -138,6 +138,45 @@ def test_simulated_position_states_split_long_short():
     assert list(eff[:6]) == [1, 0, 1, 0, 1, 0]
 
 
+def test_exit_decision_samples_shape_and_label_values():
+    """exit_decision_samples returns one row per (entry, in-trade bar). For a
+    pure-uptrend long-everywhere series, the optimal decision at every
+    intermediate bar is HOLD (more upside ahead until the very end)."""
+    from cicada_nn.labeling import exit_decision_samples
+    bars = _make_bars([100.0 + i * 0.5 for i in range(40)], atr=1.0)
+    # One long entry at bar 5; the rest neutral so we get a single trade.
+    cls = np.full(len(bars), 2, dtype=np.int64)
+    cls[5] = 1
+    scalars, labels, idx = exit_decision_samples(bars, cls, horizon_bars=10)
+    # 10 in-trade bars sampled (bars 6 .. 15)
+    assert scalars.shape == (10, 4)
+    assert labels.shape == (10,)
+    assert idx.shape == (10,)
+    assert list(idx) == list(range(6, 16))
+    # Direction is +1 (long)
+    assert (scalars[:, 3] == 1.0).all()
+    # MFE grows monotonically as the trade unfolds — never decreases
+    assert (np.diff(scalars[:, 0]) >= -1e-6).all()
+    # Every bar except the final one has more upside ahead → HOLD
+    assert labels[-1] == 1  # last bar: nothing ahead, EXIT
+    assert (labels[:-1] == 0).all(), f"expected all-HOLD until final bar, got {labels.tolist()}"
+
+
+def test_exit_decision_samples_short_in_uptrend_all_exit():
+    """A SHORT entry inside an uptrend has zero MFE and growing MAE. At every
+    bar from the start, holding makes things worse → EXIT immediately."""
+    from cicada_nn.labeling import exit_decision_samples
+    bars = _make_bars([100.0 + i * 0.5 for i in range(30)], atr=1.0)
+    cls = np.full(len(bars), 2, dtype=np.int64)
+    cls[3] = 0  # short
+    scalars, labels, idx = exit_decision_samples(bars, cls, horizon_bars=10)
+    # Direction = -1 (short)
+    assert (scalars[:, 3] == -1.0).all()
+    # All labels should be EXIT — best_future is 0 across the board for a
+    # short in an uptrend, so hold_threshold × current_pnl is never beaten
+    assert (labels == 1).all(), f"expected all-EXIT for short in uptrend, got {labels.tolist()}"
+
+
 def test_simulated_position_states_bars_since_last_entry():
     """bars_since_last_entry tracks the most-recent directional signal."""
     labels = np.array([2, 2, 1, 2, 2, 2, 2, 2, 2, 2], dtype=np.int64)
