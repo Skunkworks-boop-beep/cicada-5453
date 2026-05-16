@@ -44,6 +44,7 @@ from .labeling import (
     TripleBarrierConfig,
     triple_barrier_labels,
     mfe_mae_regression_labels,
+    simulate_position_states,
     uniqueness_weights,
     label_distribution,
 )
@@ -380,10 +381,16 @@ def train_detection(
         )
 
     labels = triple_barrier_labels(bars, tb_cfg)
+    # Phase 2: simulate position state per bar AND get the effective labels
+    # (NEUTRAL when entry would have been blocked by the soft cap). The
+    # state and labels stay aligned: features at bar i describe the bot's
+    # exposure BEFORE i's decision; effective_labels[i] is the decision the
+    # bot would have made given that exposure. This pairs the "back-off when
+    # stacked" signal explicitly in the training data.
+    pos_states_all, labels = simulate_position_states(labels, horizon_bars=horizon, soft_cap=3)
     # Per-bar regression targets — size_mult / sl_atr_mult / tp_r in [0,1]
     # range (matches the sigmoid output of the regression head). Computed
-    # from MFE/MAE within the same horizon as the triple-barrier label, so
-    # the heads share the same look-ahead window.
+    # from MFE/MAE in the direction of the (effective) label.
     reg_labels_all = mfe_mae_regression_labels(bars, labels, horizon_bars=horizon)
     # Only use bars where the look-ahead window is fully inside the data.
     last_usable = max(0, len(bars) - horizon - 1)
@@ -394,10 +401,12 @@ def train_detection(
     usable_indices = np.arange(first_usable, last_usable)
     usable_labels = labels[usable_indices]
 
-    # Build features for each usable bar.
+    # Build features for each usable bar. Pass the simulated position state
+    # for that bar so the model sees what "exposure if I'd taken every signal
+    # so far" looks like at this point in time.
     X_list = []
     for i in usable_indices:
-        X_list.append(window_features(bars, int(i), feat_cfg))
+        X_list.append(window_features(bars, int(i), feat_cfg, position_state=pos_states_all[int(i)]))
     X = np.stack(X_list).astype(np.float32)
     y = usable_labels.astype(np.int64)
 
@@ -439,7 +448,10 @@ def train_detection(
     det_cfg = DetectionConfig(
         window=bar_window,
         per_bar_features=PER_BAR_FEATURES,
-        context_features=4,
+        # 4 indicator (rsi/atr/boll/slope) + 5 position-state (Phase 2):
+        # n_open_long, n_open_short, exposure, drawdown, bars_since_entry.
+        # Must match feature_dim(feat_cfg) — see bar_features.POSITION_FEATURES.
+        context_features=9,
         hidden_dim=96,
         num_conv_blocks=2,
         num_attention_heads=4,

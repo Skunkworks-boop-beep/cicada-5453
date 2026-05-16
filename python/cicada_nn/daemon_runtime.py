@@ -210,6 +210,58 @@ def get_instrument_symbol_map() -> dict[str, str]:
 # ── NN predict: call the existing /predict logic in-process ─────────────────
 
 
+def _build_inference_position_state(cfg: BotRuntimeConfig, *, state_bars: list[dict]) -> dict:
+    """Pull the daemon's view of current exposure for ``cfg``'s instrument.
+
+    The reconciler publishes the real MT5 positions into the portfolio cache
+    every 5s; this function reads from that cache to build the same dict
+    schema the training-time simulator uses. ``state_bars`` is passed in so
+    we can approximate ``bars_since_last_entry`` against the most recent
+    entry bar of the same-instrument positions (best-effort — falls back
+    to a large value when we can't infer it)."""
+    portfolio = get_portfolio_snapshot()
+    inst = cfg.instrument_id
+    sym = cfg.instrument_symbol
+    same = [
+        p for p in portfolio.positions
+        if (p.instrument_id == inst) or (p.instrument_symbol == sym)
+    ]
+    n_long = sum(1 for p in same if p.side == "LONG")
+    n_short = sum(1 for p in same if p.side == "SHORT")
+    equity = max(1.0, float(portfolio.equity))
+    notional = sum(float(p.size) * float(p.entry_price) for p in same)
+    # Approximate bars-since-last-entry: scan ``state_bars`` for the most
+    # recent bar whose timestamp is < the latest position's open time. The
+    # exact value matters less than the order of magnitude (the feature is
+    # log-normalised).
+    bars_since = 999
+    if same and state_bars:
+        try:
+            latest_open_ts = max(
+                # PositionLite doesn't carry open_time, so reach into the
+                # raw broker row when available — otherwise pick a sentinel
+                # 'no fresh entry' value so the model treats this as cold.
+                float(getattr(p, "open_time", 0.0) or 0.0) for p in same
+            )
+            if latest_open_ts > 0:
+                # Walk backwards through bars to find the index whose time is
+                # the largest ≤ latest_open_ts.
+                for k in range(len(state_bars) - 1, -1, -1):
+                    bt = float(state_bars[k].get("time") or 0.0)
+                    if bt and bt <= latest_open_ts:
+                        bars_since = max(0, len(state_bars) - 1 - k)
+                        break
+        except Exception:  # noqa: BLE001 — never let position-state build poison predict
+            bars_since = 999
+    return {
+        "n_open_long": n_long,
+        "n_open_short": n_short,
+        "total_exposure_pct": min(1.0, notional / equity),
+        "drawdown_pct": min(1.0, max(0.0, float(portfolio.drawdown_pct))),
+        "bars_since_last_entry": bars_since,
+    }
+
+
 def daemon_predict(
     cfg: BotRuntimeConfig,
     bars: list[dict],
@@ -307,7 +359,13 @@ def daemon_predict(
             }
         bar_window = int(meta.get("bar_window", cfg.nn_detection_bar_window or 60))
         feat_cfg = BarFeatureConfig(window=bar_window, include_context=True)
-        feat = window_features(bars, len(bars) - 1, feat_cfg)
+        # Phase 2: fill position-state context from the reconciler-driven
+        # portfolio cache so the NN sees real open exposure on this
+        # instrument. The model learns to back off when exposure is high;
+        # daemon doesn't need a hard per-instrument cap (Phase 1's clamp
+        # remains as a safety floor).
+        position_state = _build_inference_position_state(cfg, state_bars=bars)
+        feat = window_features(bars, len(bars) - 1, feat_cfg, position_state=position_state)
         model = build_detection_model_from_checkpoint(ckpt)
         model.load_state_dict(ckpt["model_state"], strict=True)
         model.eval()

@@ -224,7 +224,7 @@ class DetectionConfig:
 
     window: int = 60
     per_bar_features: int = 4
-    context_features: int = 4  # rsi/atr/boll/slope
+    context_features: int = 9  # 4 indicator (rsi/atr/boll/slope) + 5 position-state
     hidden_dim: int = 96
     num_conv_blocks: int = 2
     num_attention_heads: int = 4

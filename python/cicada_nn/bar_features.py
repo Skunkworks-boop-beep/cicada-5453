@@ -31,6 +31,18 @@ import numpy as np
 
 PER_BAR_FEATURES = 4  # log-return, high-range, low-range, body fraction
 
+# Position-state features (Phase 2: NN-aware caps).
+#   [0] n_open_long_norm            — long positions on this instrument / 5
+#   [1] n_open_short_norm           — short positions on this instrument / 5
+#   [2] total_exposure_pct          — sum(size × entry) / equity, 0..1
+#   [3] drawdown_pct                — (peak - equity) / peak, 0..1
+#   [4] bars_since_last_entry_norm  — 1 - log1p(bars) / log1p(24); 0 = far, 1 = just entered
+# Splitting long / short instead of "same side" means the daemon doesn't need
+# to know what direction the NN will pick before computing features — the NN
+# sees both arms and learns asymmetric responses (e.g. "3 longs open, signal
+# says LONG → output NEUTRAL").
+POSITION_FEATURES = 5
+
 
 @dataclass(frozen=True)
 class BarFeatureConfig:
@@ -39,6 +51,14 @@ class BarFeatureConfig:
     include_context: bool = True  # adds 4 extra rolling-stat dims when True
     rsi_period: int = 14
     atr_period: int = 14
+    # When True, window_features expects an additional ``position_state`` dict
+    # and appends 5 position-aware context dims. The training loop simulates
+    # this from a chronological walk; the daemon fills it from the reconciler's
+    # portfolio snapshot at inference time. Backward-compat: old checkpoints
+    # were saved with this False (4 context dims); the new training and the
+    # daemon both use True (9 context dims) and the model picks up the wider
+    # context_proj from DetectionConfig.context_features = 9.
+    include_position_state: bool = True
 
 
 def _wilder_rsi(closes: np.ndarray, period: int) -> float | None:
@@ -117,15 +137,50 @@ def _last_trend_slope(closes: np.ndarray, period: int = 20) -> float:
 def feature_dim(config: BarFeatureConfig | None = None) -> int:
     cfg = config or BarFeatureConfig()
     base = cfg.window * PER_BAR_FEATURES
-    return base + (4 if cfg.include_context else 0)
+    ctx = 4 if cfg.include_context else 0
+    if cfg.include_position_state:
+        ctx += POSITION_FEATURES
+    return base + ctx
+
+
+def _encode_position_state(state: dict | None) -> np.ndarray:
+    """Return a fixed-shape (POSITION_FEATURES,) vector.
+
+    ``state`` keys (all optional — missing values default to zero, which is
+    'no positions / no drawdown / no recent entry' — the cold-start condition):
+      n_open_long:           int     count of long positions on this instrument
+      n_open_short:          int     count of short positions on this instrument
+      total_exposure_pct:    float   sum(size × entry_price) / equity, 0..1
+      drawdown_pct:          float   (peak_equity - equity) / peak_equity, 0..1
+      bars_since_last_entry: int     bars elapsed since the bot's last open
+    """
+    out = np.zeros(POSITION_FEATURES, dtype=np.float32)
+    if not state:
+        return out
+    out[0] = float(np.clip((state.get("n_open_long") or 0) / 5.0, 0.0, 1.0))
+    out[1] = float(np.clip((state.get("n_open_short") or 0) / 5.0, 0.0, 1.0))
+    out[2] = float(np.clip(state.get("total_exposure_pct") or 0.0, 0.0, 1.0))
+    out[3] = float(np.clip(state.get("drawdown_pct") or 0.0, 0.0, 1.0))
+    # Log-normalise bars-since: 0 bars → 1.0 (very recent — discourages re-entry),
+    # 24+ bars → 0.0 (long since — fine to enter).
+    bars_since = float(state.get("bars_since_last_entry") or 0.0)
+    out[4] = float(np.clip(1.0 - np.log1p(bars_since) / np.log1p(24.0), 0.0, 1.0))
+    return out
 
 
 def window_features(
     bars: Sequence[dict],
     end_index: int,
     config: BarFeatureConfig | None = None,
+    *,
+    position_state: dict | None = None,
 ) -> np.ndarray:
-    """Return a stable, scale-invariant feature vector for bars[end-window+1:end+1]."""
+    """Return a stable, scale-invariant feature vector for bars[end-window+1:end+1].
+
+    ``position_state`` (only consumed when config.include_position_state is True)
+    is the bot's current trading context — see ``_encode_position_state`` for
+    the schema. The model uses this to output NEUTRAL when exposure is already
+    high, replacing the daemon's hard per-instrument cap with a learned brake."""
     cfg = config or BarFeatureConfig()
     w = cfg.window
     start = max(0, end_index - w + 1)
@@ -172,16 +227,20 @@ def window_features(
         per_bar_full = per_bar[-w:].astype(np.float32)
     out[: w * PER_BAR_FEATURES] = per_bar_full.flatten()
 
+    ctx_offset = w * PER_BAR_FEATURES
     if cfg.include_context:
         rsi_val = _wilder_rsi(closes.astype(np.float32), cfg.rsi_period)
         rsi_norm = 0.0 if rsi_val is None else float(rsi_val - 50.0) / 50.0
         atr_pct = _last_atr_over_price(highs, lows, closes, cfg.atr_period)
         boll_pctb = _last_bollinger_pctb(closes) * 2.0 - 1.0  # centre around 0
         slope_norm = float(np.clip(_last_trend_slope(closes) * 1000.0, -1.0, 1.0))
-        out[w * PER_BAR_FEATURES + 0] = rsi_norm
-        out[w * PER_BAR_FEATURES + 1] = float(np.clip(atr_pct * 50.0, 0.0, 1.0))
-        out[w * PER_BAR_FEATURES + 2] = boll_pctb
-        out[w * PER_BAR_FEATURES + 3] = slope_norm
+        out[ctx_offset + 0] = rsi_norm
+        out[ctx_offset + 1] = float(np.clip(atr_pct * 50.0, 0.0, 1.0))
+        out[ctx_offset + 2] = boll_pctb
+        out[ctx_offset + 3] = slope_norm
+        ctx_offset += 4
+    if cfg.include_position_state:
+        out[ctx_offset : ctx_offset + POSITION_FEATURES] = _encode_position_state(position_state)
     return out
 
 
@@ -190,12 +249,18 @@ def batch_window_features(
     start: int,
     stop: int,
     config: BarFeatureConfig | None = None,
+    *,
+    position_states: Sequence[dict | None] | None = None,
 ) -> np.ndarray:
-    """Build features for every index in ``[start, stop)`` at once."""
+    """Build features for every index in ``[start, stop)`` at once.
+
+    ``position_states`` (optional, len = stop - start) provides the simulated
+    position context per index for training. None / empty → all-zero state."""
     cfg = config or BarFeatureConfig()
     n = max(0, stop - start)
     dim = feature_dim(cfg)
     out = np.zeros((n, dim), dtype=np.float32)
     for k, i in enumerate(range(start, stop)):
-        out[k] = window_features(bars, i, cfg)
+        ps = position_states[k] if position_states is not None and k < len(position_states) else None
+        out[k] = window_features(bars, i, cfg, position_state=ps)
     return out

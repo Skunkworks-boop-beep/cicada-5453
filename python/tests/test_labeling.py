@@ -92,3 +92,60 @@ def test_regression_labels_short_in_downtrend_has_large_tp():
     assert sl_label < 0.05
     assert tp_label > 0.95
     assert size_label > 0.5
+
+
+# ── Phase 2: simulated position states ───────────────────────────────────────
+
+
+from cicada_nn.labeling import simulate_position_states  # noqa: E402
+
+
+def test_simulated_position_states_track_open_count():
+    """When every other bar is a LONG signal, the open-count grows
+    monotonically until the first virtual exit at bar=horizon, then plateaus."""
+    n = 30
+    horizon = 5
+    labels = np.array([1 if i % 2 == 0 else 2 for i in range(n)], dtype=np.int64)
+    states, _ = simulate_position_states(labels, horizon_bars=horizon)
+    assert len(states) == n
+    # Bar 0: no priors → all zeros
+    assert states[0]["n_open_long"] == 0
+    assert states[0]["n_open_short"] == 0
+    # Bar 2: position from bar 0 still open (closes at bar 5) → 1 long
+    assert states[2]["n_open_long"] == 1
+    # Bar 4: positions from 0, 2 still open → 2 longs (soft_cap=3 default; not yet hit)
+    assert states[4]["n_open_long"] == 2
+    # Bar 6: position from 0 closed (exit at bar 5); 2 + 4 still open
+    assert states[6]["n_open_long"] == 2
+    # Always 0 shorts (no short signals in labels)
+    assert all(s["n_open_short"] == 0 for s in states)
+
+
+def test_simulated_position_states_split_long_short():
+    """Mixed long/short signals populate both counts independently — and
+    once same-side count hits soft_cap, further same-side entries are
+    blocked and their labels rewritten to NEUTRAL."""
+    labels = np.array([1, 0, 1, 0, 1, 0, 1, 0, 2, 2], dtype=np.int64)
+    states, eff = simulate_position_states(labels, horizon_bars=10, soft_cap=3)
+    # By bar 6 (BEFORE its decision): longs from 0/2/4, shorts from 1/3/5
+    assert states[6]["n_open_long"] == 3
+    assert states[6]["n_open_short"] == 3
+    # Bar 6 wanted LONG but n_long==3==soft_cap → blocked → effective label = NEUTRAL
+    assert eff[6] == 2
+    # Bar 7 wanted SHORT but n_short==3==soft_cap → blocked → NEUTRAL
+    assert eff[7] == 2
+    # First 6 bars all entered normally (under cap)
+    assert list(eff[:6]) == [1, 0, 1, 0, 1, 0]
+
+
+def test_simulated_position_states_bars_since_last_entry():
+    """bars_since_last_entry tracks the most-recent directional signal."""
+    labels = np.array([2, 2, 1, 2, 2, 2, 2, 2, 2, 2], dtype=np.int64)
+    states, _ = simulate_position_states(labels, horizon_bars=5)
+    # Before bar 2: no entries yet → big sentinel
+    assert states[0]["bars_since_last_entry"] >= 100
+    assert states[2]["bars_since_last_entry"] >= 100  # bar 2's state is BEFORE the bar-2 entry
+    # Bar 3: 1 bar after the bar-2 entry
+    assert states[3]["bars_since_last_entry"] == 1
+    # Bar 5: 3 bars after
+    assert states[5]["bars_since_last_entry"] == 3

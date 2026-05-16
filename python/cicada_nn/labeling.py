@@ -141,6 +141,75 @@ def triple_barrier_labels(
     return labels
 
 
+def simulate_position_states(
+    labels: np.ndarray,
+    *,
+    horizon_bars: int = 24,
+    notional_pct_per_position: float = 0.05,
+    soft_cap: int = 3,
+) -> tuple[list[dict], np.ndarray]:
+    """For each bar i, return (state, effective_label) describing the
+    simulated bot's behaviour if it had taken every directional signal
+    subject to a soft per-side cap.
+
+    Returns:
+      states           — list[dict] of length n; each dict matches the
+                          schema ``_encode_position_state`` consumes.
+      effective_labels — np.ndarray[int64] of length n; labels[i] is set to
+                          2 (NEUTRAL) when the simulation would have BLOCKED
+                          the entry at bar i because the same-side count was
+                          already at ``soft_cap``. Returned so the model is
+                          trained against the labels that match the
+                          position state it sees — without this the labels
+                          say LONG and the features say "stacked", but the
+                          model has no signal that those two relate.
+
+    Simplifications (acceptable for Phase 2):
+      * Every virtual position closes exactly ``horizon_bars`` after entry
+        (no SL/TP simulation). Over-estimates hold time → model errs cautious.
+      * Drawdown stays at 0 (equity tracking would need MFE/MAE re-simulation).
+      * total_exposure_pct = n_open × notional_pct_per_position (proxy).
+    """
+    n = len(labels)
+    effective = labels.copy().astype(np.int64)
+    states: list[dict] = []
+    last_entry = -1
+    # Maintain rolling list of (entry_bar, side, exit_bar) — sweep forward.
+    open_positions: list[tuple[int, int, int]] = []
+    for i in range(n):
+        # Evict positions that closed strictly before i.
+        open_positions = [p for p in open_positions if p[2] >= i]
+        n_long = sum(1 for p in open_positions if p[1] == 1)
+        n_short = sum(1 for p in open_positions if p[1] == 0)
+        n_open = n_long + n_short
+        bars_since = (i - last_entry) if last_entry >= 0 else 999
+        states.append({
+            "n_open_long": n_long,
+            "n_open_short": n_short,
+            "total_exposure_pct": min(1.0, n_open * notional_pct_per_position),
+            "drawdown_pct": 0.0,
+            "bars_since_last_entry": bars_since,
+        })
+
+        # Entry decision for bar i — respect the soft cap. When blocked,
+        # rewrite the effective label to NEUTRAL so the training signal is
+        # "high exposure → output NEUTRAL".
+        cls = int(effective[i])
+        if cls == 1:
+            if n_long >= soft_cap:
+                effective[i] = 2
+            else:
+                open_positions.append((i, 1, min(n - 1, i + horizon_bars)))
+                last_entry = i
+        elif cls == 0:
+            if n_short >= soft_cap:
+                effective[i] = 2
+            else:
+                open_positions.append((i, 0, min(n - 1, i + horizon_bars)))
+                last_entry = i
+    return states, effective
+
+
 def mfe_mae_regression_labels(
     bars: Sequence[dict],
     class_labels: np.ndarray,
