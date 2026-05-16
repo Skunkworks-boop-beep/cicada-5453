@@ -40,7 +40,13 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from .bar_features import BarFeatureConfig, feature_dim, window_features, PER_BAR_FEATURES
 from .compute import configure_torch_for_speed, get_compute_config
-from .labeling import TripleBarrierConfig, triple_barrier_labels, uniqueness_weights, label_distribution
+from .labeling import (
+    TripleBarrierConfig,
+    triple_barrier_labels,
+    mfe_mae_regression_labels,
+    uniqueness_weights,
+    label_distribution,
+)
 from .model import DetectionConfig, StrategyDetectionNN
 from .train import _safe_instrument_id, _robust_score, filter_best_results_for_build
 
@@ -374,6 +380,11 @@ def train_detection(
         )
 
     labels = triple_barrier_labels(bars, tb_cfg)
+    # Per-bar regression targets — size_mult / sl_atr_mult / tp_r in [0,1]
+    # range (matches the sigmoid output of the regression head). Computed
+    # from MFE/MAE within the same horizon as the triple-barrier label, so
+    # the heads share the same look-ahead window.
+    reg_labels_all = mfe_mae_regression_labels(bars, labels, horizon_bars=horizon)
     # Only use bars where the look-ahead window is fully inside the data.
     last_usable = max(0, len(bars) - horizon - 1)
     first_usable = bar_window
@@ -398,6 +409,9 @@ def train_detection(
     X_train, y_train = X[train_idx], y[train_idx]
     X_val = X[val_idx] if len(val_idx) else np.zeros((0, X.shape[1]), dtype=np.float32)
     y_val = y[val_idx] if len(val_idx) else np.zeros(0, dtype=np.int64)
+    # Subset the regression targets in lockstep with the classification split.
+    reg_usable = reg_labels_all[usable_indices].astype(np.float32)
+    reg_train = reg_usable[train_idx]
     w_train = uniqueness_weights(len(y_train), horizon)
 
     # Class weights: rebalance because triple-barrier is often skewed towards
@@ -407,8 +421,9 @@ def train_detection(
     X_train_t = torch.from_numpy(X_train).float().to(DEVICE)
     y_train_t = torch.from_numpy(y_train).long().to(DEVICE)
     w_train_t = torch.from_numpy(w_train.astype(np.float32)).to(DEVICE)
+    reg_train_t = torch.from_numpy(reg_train).float().to(DEVICE)
 
-    dataset = TensorDataset(X_train_t, y_train_t, w_train_t)
+    dataset = TensorDataset(X_train_t, y_train_t, w_train_t, reg_train_t)
     batch_size = min(64, max(16, len(dataset) // 4))
     # pin_memory must not be set when tensors already live on the GPU.
     can_pin = _COMPUTE.pin_memory and X_train_t.device.type == "cpu"
@@ -433,6 +448,13 @@ def train_detection(
     model = _maybe_data_parallel(StrategyDetectionNN(det_cfg).to(DEVICE))
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     loss_fn = nn.CrossEntropyLoss(weight=class_weights, reduction="none", label_smoothing=0.05)
+    # MSE on the regression head — was previously unused (head outputs
+    # random weights, daemon had to clamp them to mode bounds). Weighted
+    # at 0.5x the classification loss so direction still dominates: the
+    # regression targets are noisy hindsight heuristics, while the
+    # classification labels come from a well-defined triple-barrier rule.
+    reg_loss_fn = nn.MSELoss(reduction="none")
+    REG_LOSS_WEIGHT = 0.5
 
     best_val_acc = 0.0
     best_state: Optional[dict] = None
@@ -442,11 +464,17 @@ def train_detection(
     for ep in range(epochs):
         model.train()
         total = 0.0
-        for bx, by, bw in loader:
+        for bx, by, bw, breg in loader:
             opt.zero_grad()
-            logits = model(bx)
-            per_sample = loss_fn(logits, by)
-            loss = (per_sample * bw).mean()
+            # forward_with_regression returns (logits, reg) — train both heads
+            # in a single forward pass to share the encoder representation.
+            logits, reg_out = _unwrap_model(model).forward_with_regression(bx)
+            per_sample_cls = loss_fn(logits, by)
+            cls_loss = (per_sample_cls * bw).mean()
+            # Per-sample MSE then mean over (samples × 3 dims), then weight.
+            per_sample_reg = reg_loss_fn(reg_out, breg).mean(dim=1)
+            reg_loss = (per_sample_reg * bw).mean()
+            loss = cls_loss + REG_LOSS_WEIGHT * reg_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()

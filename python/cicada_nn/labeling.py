@@ -141,6 +141,86 @@ def triple_barrier_labels(
     return labels
 
 
+def mfe_mae_regression_labels(
+    bars: Sequence[dict],
+    class_labels: np.ndarray,
+    *,
+    horizon_bars: int = 24,
+) -> np.ndarray:
+    """Per-bar regression targets for the StrategyDetectionNN regression head.
+
+    For each bar ``i``, walks forward up to ``horizon_bars`` bars and computes
+    MFE (max favourable excursion) and MAE (max adverse excursion) IN THE
+    DIRECTION OF ``class_labels[i]`` (long / short / neutral). Returns shape
+    ``(n, 3)`` of values in ``[0, 1]`` matching the sigmoid output range of
+    the regression head:
+
+      out[i, 0] = size_target     ← maps back to size_multiplier ∈ [0.5, 2.0]
+      out[i, 1] = sl_atr_target   ← maps back to sl_atr_mult     ∈ [0.3, 4.0]
+      out[i, 2] = tp_r_target     ← maps back to tp_r            ∈ [1.0, 3.0]
+
+    Heuristic labels (derived from hindsight on the historical bars):
+
+      sl_atr_mult = clamp(MAE_in_ATR × 1.2, 0.3, 4.0)
+          — tight stop just beyond the worst dip we ever saw, with a 20%
+            buffer so a trade that retests the exact MAE isn't immediately
+            stopped out
+      tp_r        = clamp(MFE / max(MAE, ε), 1.0, 3.0)
+          — R-multiple = how many times the SL distance the move actually
+            went in our favour
+      size_mult   = 1.5 if MFE > 2 × MAE else 1.0 if MFE > MAE else 0.5
+          — scale into clean setups, scale out of marginal ones
+
+    Neutral bars (label=2) get conservative defaults: small SL, modest TP,
+    minimum size. The MSE loss on these isn't strong because the
+    classification head will route most NEUTRAL predictions to ignore them
+    anyway, but they need *some* value to avoid the regression head
+    overfitting on the directional samples.
+
+    This is the function ``train_detection.train_detection`` calls to fill
+    out the regression head's training targets — without it, the head's
+    output is random weights at inference time and the daemon has to clamp
+    them to mode bounds (see ``daemon_runtime.daemon_predict``)."""
+    n = len(bars)
+    out = np.zeros((n, 3), dtype=np.float32)
+    if n == 0:
+        return out
+    # Neutral defaults
+    out[:, 0] = (0.5 - 0.5) / 1.5  # size_mult = 0.5 (minimum)
+    out[:, 1] = (1.0 - 0.3) / 3.7  # sl_atr_mult = 1.0  (mid-range; safe default)
+    out[:, 2] = (1.5 - 1.0) / 2.0  # tp_r        = 1.5  (1.5 R; modest TP)
+
+    for i in range(n - 1):
+        cls = int(class_labels[i]) if i < len(class_labels) else 2
+        if cls == 2:
+            continue  # leave defaults
+        close_i = float(bars[i].get("close") or 0.0)
+        if close_i <= 0:
+            continue
+        atr = _atr_proxy(bars, i)
+        if atr <= 0:
+            continue
+        end = min(n - 1, i + horizon_bars)
+        mfe = 0.0  # max favourable in the direction of cls
+        mae = 0.0  # max adverse
+        for j in range(i + 1, end + 1):
+            hi = float(bars[j].get("high") or bars[j].get("close") or close_i)
+            lo = float(bars[j].get("low") or bars[j].get("close") or close_i)
+            if cls == 1:  # long
+                mfe = max(mfe, hi - close_i)
+                mae = max(mae, close_i - lo)
+            else:  # short (cls == 0)
+                mfe = max(mfe, close_i - lo)
+                mae = max(mae, hi - close_i)
+        sl_atr = max(0.3, min(4.0, (mae / atr) * 1.2))
+        r_mult = max(1.0, min(3.0, mfe / max(mae, 1e-9)))
+        size = 1.5 if mfe > 2 * mae else (1.0 if mfe > mae else 0.5)
+        out[i, 0] = max(0.0, min(1.0, (size - 0.5) / 1.5))
+        out[i, 1] = max(0.0, min(1.0, (sl_atr - 0.3) / 3.7))
+        out[i, 2] = max(0.0, min(1.0, (r_mult - 1.0) / 2.0))
+    return out
+
+
 def forward_return_labels(
     bars: Sequence[dict],
     horizon_bars: int = 10,

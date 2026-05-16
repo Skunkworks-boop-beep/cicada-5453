@@ -81,6 +81,12 @@ class BotRuntimeConfig:
     scope: str = "day"
     risk_params: BotRiskParams = field(default_factory=BotRiskParams)
     max_positions: int = 2
+    # Per-instrument cap. ``None`` means "no separate cap — bounded only by
+    # max_positions"; previously hardcoded to 2 inside _tick_once with no
+    # config knob. Spec §4 defines per-mode max_concurrent (a different
+    # concept) but not a per-instrument cap; this knob is here so operators
+    # can still pin one explicitly when running a multi-instrument bot.
+    max_positions_per_instrument: Optional[int] = None
     # Strategy IDs this bot trades — primary strategy is strategy_ids[0]; the
     # rest are reserved for an ensemble vote once the daemon implements
     # multi-strategy aggregation. Empty list means "no strategy configured" —
@@ -474,7 +480,7 @@ class ExecutionDaemon:
             regime=regime,
             bot_id=cfg.bot_id,
             max_positions_per_bot=cfg.max_positions,
-            max_positions_per_instrument=2,
+            max_positions_per_instrument=cfg.max_positions_per_instrument,
             tp_r=tp_r,
             target_daily_vol_pct=cfg.target_daily_vol_pct,
         )

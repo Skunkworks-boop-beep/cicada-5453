@@ -952,6 +952,11 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
                     default_risk_reward_ratio=float(risk.get("defaultRiskRewardRatio") or 2.0),
                 ),
                 max_positions=int(raw.get("maxPositions") or 2),
+                max_positions_per_instrument=(
+                    int(raw["maxPositionsPerInstrument"])
+                    if raw.get("maxPositionsPerInstrument") not in (None, "")
+                    else None
+                ),
                 strategy_ids=list(raw.get("strategyIds") or []),
                 bot_timeframes=list(raw.get("timeframes") or []),
                 nn_feature_vector=list(raw.get("nnFeatureVector") or []),
