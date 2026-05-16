@@ -886,7 +886,24 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
     # which mangles synthetic instrument ids ('inst-deriv-r10' → 'DERIVR10')
     # and breaks every deployed bot on a synthetic until the FE pushes the map
     # — which it doesn't currently do. See fetch_bars_for_daemon.
+    #
+    # IMPORTANT — two-pass so the symbol map is fully populated BEFORE the
+    # first daemon thread launches. The previous single-pass version published
+    # the map after deploy(), so the FIRST tick after backend startup raced
+    # the publish and fell back to the legacy mangler — producing one
+    # spurious "bridge error: HTTP Error 404 Not Found" per restart.
     symbol_map = dict(get_instrument_symbol_map())
+    for raw in bots:
+        try:
+            inst_id = str(raw.get("instrumentId") or "")
+            sym = str(raw.get("instrumentSymbol") or raw.get("instrument") or "")
+            if inst_id and sym:
+                symbol_map[inst_id] = sym
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+    if symbol_map:
+        set_instrument_symbol_map(symbol_map)
+
     for raw in bots:
         try:
             if (raw.get("status") or "").lower() != "deployed":
@@ -929,14 +946,12 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
             )
             if not cfg.bot_id or not cfg.instrument_id:
                 continue
-            if cfg.instrument_symbol:
-                symbol_map[cfg.instrument_id] = cfg.instrument_symbol
+            # symbol map already set above in the pre-pass — no further update
+            # needed here; we just deploy the bot.
             daemon.deploy(cfg)
             launched += 1
         except Exception as e:
             logger.warning("daemon hydrate skip bot=%r: %s", raw.get("id"), e)
-    if symbol_map:
-        set_instrument_symbol_map(symbol_map)
     if launched:
         logger.info("daemon hydrated %d bot(s) from storage", launched)
     return launched
