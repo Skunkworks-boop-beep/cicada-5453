@@ -71,6 +71,7 @@ from .daemon_runtime import (
     set_instrument_symbol_map,
     set_portfolio_snapshot,
     shutdown_daemon,
+    start_execution_log_persister,
 )
 from .event_bus import EVENT_BUS
 from .execution_daemon import BotRuntimeConfig
@@ -132,6 +133,11 @@ def _bootstrap_daemon():
         # the daemon falls back to event-only logging (the legacy path).
         from .daemon_runtime import set_order_store
         set_order_store(STORAGE.orders)
+        # Bridge daemon EVENT_BUS → execution_log so the dashboard's
+        # BotExecutionLog (via GET /execution-log) sees daemon ticks.
+        # Without this the daemon emits events into the in-memory bus and
+        # nothing on the frontend is wired to subscribe.
+        start_execution_log_persister(STORAGE)
         launched = hydrate_and_launch_from_storage(STORAGE)
         # Stage 2A: start the bridge-RTT monitor. The daemon thread polls
         # localhost:5000/health every 30s and writes latency_log rows that

@@ -789,6 +789,87 @@ def get_daemon() -> ExecutionDaemon:
     return _DAEMON
 
 
+# Map daemon event ``kind`` → ExecutionLogEvent phase + outcome so the
+# dashboard's BotExecutionLog can render the right icon/colour.
+_KIND_TO_PHASE: dict[str, tuple[str, str]] = {
+    "scope_paused":      ("select_scope", "skip"),
+    "ensemble":          ("predict",      "skip"),     # ensemble NEUTRAL — no order
+    "risk_block":        ("risk_check",   "skip"),
+    "validate_reject":   ("validate",     "fail"),
+    "order":             ("order",        "success"),
+    "order_error":       ("order",        "fail"),
+    "sl_modify":         ("sl_modify",    "success"),
+    "trade_open":        ("trade_open",   "success"),
+    "trade_close":       ("trade_close",  "success"),
+    "boot":              ("skipped",      "ignored"),
+    "deployed":          ("skipped",      "ignored"),
+    "enabled":           ("skipped",      "ignored"),
+    "disabled":          ("skipped",      "ignored"),
+}
+
+
+def _bot_event_to_log_row(ev: dict[str, Any]) -> dict[str, Any]:
+    """Convert a daemon EVENT_BUS payload into an ExecutionLogEvent row."""
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+    kind = str(ev.get("kind") or "")
+    phase, outcome = _KIND_TO_PHASE.get(kind, ("skipped", "ignored"))
+    ts = float(ev.get("ts") or time.time())
+    iso = _dt.fromtimestamp(ts, tz=_tz.utc).isoformat()
+    # Compact message — the human-readable summary the BotExecutionLog row shows.
+    message_bits: list[str] = [kind]
+    for k in ("action", "side", "reason", "detail", "strategy_id", "strategy_signal",
+              "nn_action", "regime"):
+        v = ev.get(k)
+        if v is not None and v != "":
+            message_bits.append(f"{k}={v}")
+    return {
+        "id": _uuid.uuid4().hex,
+        "timestamp": iso,
+        "botId": str(ev.get("bot_id") or ""),
+        "symbol": str(ev.get("instrument_symbol") or ""),
+        "phase": phase,
+        "outcome": outcome,
+        "message": " ".join(message_bits)[:240],
+        "details": ev,
+    }
+
+
+def start_execution_log_persister(storage: StorageService) -> threading.Thread:
+    """Subscribe to bot_tick events and persist each one to the execution-log
+    table so the dashboard's BotExecutionLog (which reads via GET /execution-log)
+    sees daemon activity.
+
+    Previously the daemon's events only existed in EVENT_BUS (in-memory) and
+    SSE; no frontend code ever subscribed, so the UI's bot card sat on
+    "Waiting for next tick…" even when the daemon was emitting events every
+    30 s. This thread is the missing bridge between the daemon's bus and
+    the persisted execution log."""
+    from .event_bus import EVENT_BUS
+    sub = EVENT_BUS.subscribe({"bot_tick"})
+    log_max = 500  # matches EXECUTION_LOG_MAX in api.py
+
+    def _loop() -> None:
+        while True:
+            try:
+                ev = sub.queue.get(timeout=30.0)
+            except Exception:
+                continue
+            try:
+                row = _bot_event_to_log_row(ev.payload)
+                existing = storage.execution_log.read() or []
+                if not isinstance(existing, list):
+                    existing = (existing.get("events") or []) if isinstance(existing, dict) else []
+                existing.append(row)
+                storage.execution_log.write(existing[-log_max:])
+            except Exception:
+                logger.exception("execution-log persister: row write failed")
+
+    t = threading.Thread(target=_loop, name="execution-log-persister", daemon=True)
+    t.start()
+    return t
+
+
 def hydrate_and_launch_from_storage(storage: StorageService) -> int:
     """On API startup: read persisted bots, instantiate daemon workers for any
     that are deployed. Returns count of bots launched."""
