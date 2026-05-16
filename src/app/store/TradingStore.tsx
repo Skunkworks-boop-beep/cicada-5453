@@ -3065,8 +3065,12 @@ function getActions(): TradingStoreActions {
       }
     },
     async loadExecutionLogFromBackend(opts?: { merge?: boolean }) {
-      const remote = getRemoteServerUrl();
-      if (!remote) return;
+      // Previously gated on getRemoteServerUrl() and bailed when no remote
+      // was configured — but getExecutionLog itself uses getNnApiBaseUrl()
+      // which transparently handles both local and remote, so the gate just
+      // silently dropped every read against a local backend. That's why a
+      // running daemon with rows in /execution-log appeared as an empty
+      // BotExecutionLog on a localhost dashboard.
       const events = await getExecutionLog({ limit: 500 });
       if (events.length === 0) return;
       const asBotEvents: BotExecutionEvent[] = events.map((e) => ({
@@ -3368,8 +3372,16 @@ function getActions(): TradingStoreActions {
         }
         persist(); // persist full state (instruments, brokers with credentials, etc.) so reload keeps everything
         emit();
-        if (getRemoteServerUrl()) {
-          getActions().loadExecutionLogFromBackend({ merge: true }).catch(() => {});
+        // Always pull the backend's execution log on startup — see comment
+        // in loadExecutionLogFromBackend for why the remote-only gate was
+        // wrong. Also set up a periodic refresh so daemon events appear
+        // live (every 5 s; daemon ticks at 15–120 s by scope so the poll
+        // is cheap relative to the event rate).
+        getActions().loadExecutionLogFromBackend({ merge: true }).catch(() => {});
+        if (typeof window !== 'undefined') {
+          window.setInterval(() => {
+            getActions().loadExecutionLogFromBackend({ merge: true }).catch(() => {});
+          }, 5_000);
         }
         startResearchServerSync();
       } catch (err) {
