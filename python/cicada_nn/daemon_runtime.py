@@ -230,15 +230,54 @@ def daemon_predict(
 
     safe = _safe_instrument_id(cfg.instrument_id)
     ckpt_dir = Path(os.environ.get("CICADA_NN_CHECKPOINTS", "checkpoints"))
-    det_path = ckpt_dir / f"instrument_detection_{safe}.pt"
+    manifest_path = ckpt_dir / f"instrument_detection_{safe}_manifest.json"
     pt_path = ckpt_dir / f"instrument_bot_nn_{safe}.pt"
+
+    # Prefer the per-TF checkpoint listed in the manifest — /build writes
+    # ``instrument_detection_<safe>__<TF>.pt`` with a manifest pointing at it,
+    # so the old no-suffix ``instrument_detection_<safe>.pt`` is typically a
+    # stale artifact from a previous build process and a load-time crash
+    # (different model architecture). Resolution order:
+    #   1. manifest[primary_tf or nn_detection_timeframe] if present
+    #   2. any manifest entry (pick the highest val_accuracy)
+    #   3. legacy no-suffix path (last resort; usually stale)
+    det_path: Path | None = None
+    det_bar_window: int | None = None
+    if manifest_path.exists():
+        try:
+            import json as _json
+            manifest = _json.loads(manifest_path.read_text())
+            models = (manifest.get("models") or {})
+            wanted_tf = str(cfg.nn_detection_timeframe or cfg.primary_timeframe or "").upper()
+            chosen = models.get(wanted_tf)
+            if chosen is None and models:
+                # Highest val_accuracy across whatever the manifest holds.
+                chosen = max(models.values(), key=lambda m: float(m.get("val_accuracy") or 0.0))
+            if isinstance(chosen, dict) and chosen.get("checkpoint_path"):
+                # Manifest stores e.g. "checkpoints/instrument_detection_<inst>__H1.pt"
+                # — a path relative to the backend's CWD. Resolve by basename
+                # against our known ckpt_dir so we work regardless of how the
+                # backend was launched.
+                candidate = ckpt_dir / Path(chosen["checkpoint_path"]).name
+                if candidate.exists():
+                    det_path = candidate
+                    bw = chosen.get("bar_window")
+                    if bw is not None:
+                        det_bar_window = int(bw)
+        except Exception as e:  # noqa: BLE001 — manifest parsing is best-effort
+            logger.warning("daemon predict: manifest parse failed (%s); trying legacy no-suffix path", e)
+    if det_path is None:
+        legacy = ckpt_dir / f"instrument_detection_{safe}.pt"
+        if legacy.exists():
+            det_path = legacy
 
     # Detection model (V3) preferred when available. Wrapped in try/except
     # so a stale or mis-architected checkpoint (e.g. an older save with
     # ``net.0/3/6`` keys when the current StrategyDetectionNN expects
     # ``conv_blocks/attn/positional``) doesn't crash the daemon tick on every
     # iteration — we fall through to the tabular path or final NEUTRAL.
-    if det_path.exists() and len(bars) >= (cfg.nn_detection_bar_window or 60):
+    required_bars = det_bar_window or cfg.nn_detection_bar_window or 60
+    if det_path is not None and det_path.exists() and len(bars) >= required_bars:
       try:
         from .bar_features import BarFeatureConfig, window_features
         from .model import build_detection_model_from_checkpoint
