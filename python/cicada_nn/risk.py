@@ -522,13 +522,32 @@ def ensemble_decision(
     nn_weight: float = 0.6,
     min_confidence: float = 0.4,
 ) -> EnsembleDecision:
+    """Combine NN + strategy signal into a single direction + confidence.
+
+    Architectural note: this ensemble produces the COMBINED confidence
+    (weighted NN + strategy agreement, 0..1). It does **not** apply the
+    per-mode confidence gate — spec §4 puts that gate in ``validate_order``
+    (``signal.confidence < rules.confidence_threshold``) where it knows the
+    trade mode and its specific threshold (0.60 SCALP / 0.65 day / 0.70
+    SWING / 0.80 SNIPER).
+
+    ``regime_confidence`` was previously multiplied through the score, which
+    silently double-gated trades — a ranging regime (rconf 0.6) capped the
+    ensemble ceiling at 0.6 even when NN and strategy both fired hard, and
+    the 0.4 min_confidence floor then rejected almost every signal. Regime
+    is information that the daemon already uses for scope selection and the
+    NN takes as a feature; it doesn't belong as a multiplier on the
+    ensemble confidence. The ``min_confidence`` floor here is a low sanity
+    bar (filter pure noise); the real gate is per-mode downstream."""
     nn_dir: EnsembleAction = "LONG" if nn_action == 0 else "SHORT" if nn_action == 1 else "NEUTRAL"
     strat_dir: EnsembleAction = "LONG" if strategy_signal == 1 else "SHORT" if strategy_signal == -1 else "NEUTRAL"
     nn_w = max(0.0, min(1.0, nn_weight))
     s_w = 1 - nn_w
     nn_conf = max(0.0, min(1.0, nn_confidence))
     s_conf = max(0.0, min(1.0, strategy_reliability))
-    rconf = max(0.0, min(1.0, regime_confidence))
+    # regime_confidence is preserved in the signature for callers that pass
+    # it (no breaking change) but is no longer applied as a multiplier here.
+    _ = max(0.0, min(1.0, regime_confidence))
 
     if nn_dir == "NEUTRAL" and strat_dir == "NEUTRAL":
         return EnsembleDecision(action="NEUTRAL", confidence=1 - min_confidence, reason="neutral")
@@ -543,9 +562,6 @@ def ensemble_decision(
         long_score += s_w * s_conf
     if strat_dir == "SHORT":
         short_score += s_w * s_conf
-
-    long_score *= rconf
-    short_score *= rconf
 
     if long_score > short_score:
         direction: EnsembleAction = "LONG" if long_score > 0 else "NEUTRAL"
