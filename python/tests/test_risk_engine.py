@@ -217,6 +217,57 @@ def test_ensemble_suppresses_below_min_confidence():
     assert d.reason == "low_confidence"
 
 
+def test_ensemble_strategy_carries_when_nn_abstains():
+    """A strategy firing SHORT with NN abstaining (NEUTRAL) should pass the
+    min_confidence floor with the strategy's RELIABILITY as the score —
+    not the strategy's tiny share of the joint vote (which previously
+    capped it at strat_weight × reliability = 0.4 × 0.6 = 0.24 → REJECTED
+    every time).
+
+    Replaces the implicit behaviour that 268 consecutive live ensemble
+    events showed: strategy_signal=SHORT, nn_action=NEUTRAL,
+    reason=low_confidence. The architecturally correct interpretation is
+    that NEUTRAL means 'no opinion', not 'vote against by abstaining'."""
+    d = ensemble_decision(
+        nn_action=2,           # NEUTRAL — abstention
+        nn_confidence=0.42,
+        strategy_signal=-1,    # strategy fires SHORT
+        strategy_reliability=0.6,
+        min_confidence=0.4,
+    )
+    assert d.action == "SHORT"
+    assert d.confidence >= 0.4  # passes the floor (renormalised eff_s_w = 1.0)
+    assert d.reason == "strategy_dominant"
+
+
+def test_ensemble_nn_carries_when_strategy_abstains():
+    """Mirror: NN fires LONG with strategy abstaining → NN's full weight."""
+    d = ensemble_decision(
+        nn_action=0,           # LONG
+        nn_confidence=0.55,
+        strategy_signal=0,     # NEUTRAL — abstention
+        strategy_reliability=0.6,
+        min_confidence=0.4,
+    )
+    assert d.action == "LONG"
+    assert d.confidence >= 0.4
+    assert d.reason == "nn_dominant"
+
+
+def test_ensemble_joint_agreement_unchanged_by_abstention_fix():
+    """When both vote the same direction (the existing happy path), the
+    renormalised weights still sum to 1.0 so the joint score is identical
+    to the pre-fix math. The fix only changes the abstention case."""
+    d = ensemble_decision(
+        nn_action=1, nn_confidence=0.8,
+        strategy_signal=-1, strategy_reliability=0.7,
+        nn_weight=0.6, min_confidence=0.4,
+    )
+    # Expected: 0.6 × 0.8 + 0.4 × 0.7 = 0.76
+    assert d.action == "SHORT"
+    assert abs(d.confidence - 0.76) < 0.01
+
+
 def test_ensemble_does_not_double_gate_on_regime():
     """Regime is information consumed by the NN as a feature and by the
     scope selector, not a multiplier on the ensemble confidence. The per-mode

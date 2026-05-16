@@ -388,7 +388,13 @@ def train_detection(
     # exposure BEFORE i's decision; effective_labels[i] is the decision the
     # bot would have made given that exposure. This pairs the "back-off when
     # stacked" signal explicitly in the training data.
-    pos_states_all, labels = simulate_position_states(labels, horizon_bars=horizon, soft_cap=3)
+    # soft_cap=5: bumped from 3 because cap=3 with horizon=24 rewrote ~70%
+    # of training labels to NEUTRAL — the model learned "default to NEUTRAL"
+    # and on live data produced nn_action=NEUTRAL invariant with nn_conf~0.42.
+    # Cap=5 keeps the position-aware brake (5 same-side ≫ cap) while
+    # preserving more directional samples (target ~50% NEUTRAL, 25% LONG,
+    # 25% SHORT) so the model retains real directional signal.
+    pos_states_all, labels = simulate_position_states(labels, horizon_bars=horizon, soft_cap=5)
     # Per-bar regression targets — size_mult / sl_atr_mult / tp_r in [0,1]
     # range (matches the sigmoid output of the regression head). Computed
     # from MFE/MAE in the direction of the (effective) label.

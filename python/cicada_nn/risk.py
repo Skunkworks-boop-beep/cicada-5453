@@ -541,8 +541,7 @@ def ensemble_decision(
     bar (filter pure noise); the real gate is per-mode downstream."""
     nn_dir: EnsembleAction = "LONG" if nn_action == 0 else "SHORT" if nn_action == 1 else "NEUTRAL"
     strat_dir: EnsembleAction = "LONG" if strategy_signal == 1 else "SHORT" if strategy_signal == -1 else "NEUTRAL"
-    nn_w = max(0.0, min(1.0, nn_weight))
-    s_w = 1 - nn_w
+    nn_w_cfg = max(0.0, min(1.0, nn_weight))
     nn_conf = max(0.0, min(1.0, nn_confidence))
     s_conf = max(0.0, min(1.0, strategy_reliability))
     # regime_confidence is preserved in the signature for callers that pass
@@ -552,16 +551,32 @@ def ensemble_decision(
     if nn_dir == "NEUTRAL" and strat_dir == "NEUTRAL":
         return EnsembleDecision(action="NEUTRAL", confidence=1 - min_confidence, reason="neutral")
 
+    # Abstention-aware weighting: a NEUTRAL vote means "no opinion", NOT
+    # "vote against". When one side abstains, the other gets full weight
+    # (renormalised); without this a strategy firing SHORT with reliability
+    # 0.6 only scored 0.24 (= 0.4 × 0.6) and never crossed the 0.4 floor —
+    # the operator saw "reason=low_confidence" repeatedly even though the
+    # strategy was firing cleanly. The joint-agreement case (both vote the
+    # same way) is unchanged because renormalised weights still sum to 1.
+    nn_abstains = (nn_dir == "NEUTRAL")
+    strat_abstains = (strat_dir == "NEUTRAL")
+    eff_nn_w = 0.0 if nn_abstains else nn_w_cfg
+    eff_s_w = 0.0 if strat_abstains else (1.0 - nn_w_cfg)
+    total_w = eff_nn_w + eff_s_w
+    if total_w > 0:
+        eff_nn_w /= total_w
+        eff_s_w /= total_w
+
     long_score = 0.0
     short_score = 0.0
     if nn_dir == "LONG":
-        long_score += nn_w * nn_conf
+        long_score += eff_nn_w * nn_conf
     if nn_dir == "SHORT":
-        short_score += nn_w * nn_conf
+        short_score += eff_nn_w * nn_conf
     if strat_dir == "LONG":
-        long_score += s_w * s_conf
+        long_score += eff_s_w * s_conf
     if strat_dir == "SHORT":
-        short_score += s_w * s_conf
+        short_score += eff_s_w * s_conf
 
     if long_score > short_score:
         direction: EnsembleAction = "LONG" if long_score > 0 else "NEUTRAL"
