@@ -217,7 +217,17 @@ def test_ensemble_suppresses_below_min_confidence():
     assert d.reason == "low_confidence"
 
 
-def test_ensemble_damps_with_low_regime_confidence():
+def test_ensemble_does_not_double_gate_on_regime():
+    """Regime is information consumed by the NN as a feature and by the
+    scope selector, not a multiplier on the ensemble confidence. The per-mode
+    confidence_threshold in validate_order is the real gate (spec §4); the
+    ensemble's job is to combine, not to squash a strong agreed signal
+    because the regime is uncertain.
+
+    Replaces test_ensemble_damps_with_low_regime_confidence — that test
+    locked in a behavior that prevented every NN+strategy=SHORT agreement
+    at nn_conf≈0.7 from firing under a ranging regime."""
     high = ensemble_decision(0, 0.9, 1, 0.7, regime_confidence=1.0)
     low = ensemble_decision(0, 0.9, 1, 0.7, regime_confidence=0.3)
-    assert high.confidence > low.confidence
+    assert high.confidence == low.confidence
+    assert high.action == "LONG" and low.action == "LONG"
