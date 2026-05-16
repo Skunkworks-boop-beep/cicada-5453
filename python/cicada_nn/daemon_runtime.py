@@ -389,15 +389,20 @@ def daemon_predict(
 
 def daemon_strategy_signal(cfg: BotRuntimeConfig, bars: list[dict], regime: str) -> int:
     """Return the strategy signal for the bot's primary strategy. Default to
-    neutral when no strategy is configured or the call fails."""
+    neutral when no strategy is configured or the call fails.
+
+    Reads from ``cfg.strategy_ids[0]`` — populated by /daemon/deploy and the
+    storage hydrator. The previous version hard-coded ``ind-rsi`` because the
+    config didn't carry strategies, so a bot deployed with ``cp-double-top``
+    silently ran the RSI signal instead — meaning the ensemble never saw the
+    user's actual strategy and the bot effectively always traded RSI."""
     from .signals import get_signal
 
-    # The bot config may carry a strategy id in meta; for now use a neutral
-    # default. Once the daemon exposes its own /deploy endpoint with explicit
-    # strategy_id, this will read from there.
-    strategy_id = getattr(cfg, "strategy_id", None) or "ind-rsi"
+    ids = getattr(cfg, "strategy_ids", None) or []
+    if not ids:
+        return 0
     try:
-        return int(get_signal(strategy_id, bars, len(bars) - 1, regime, None))
+        return int(get_signal(ids[0], bars, len(bars) - 1, regime, None))
     except Exception:
         return 0
 
@@ -836,6 +841,7 @@ def hydrate_and_launch_from_storage(storage: StorageService) -> int:
                     default_risk_reward_ratio=float(risk.get("defaultRiskRewardRatio") or 2.0),
                 ),
                 max_positions=int(raw.get("maxPositions") or 2),
+                strategy_ids=list(raw.get("strategyIds") or []),
                 nn_feature_vector=list(raw.get("nnFeatureVector") or []),
                 nn_detection_timeframe=raw.get("nnDetectionTimeframe"),
                 nn_detection_bar_window=raw.get("nnDetectionBarWindow"),

@@ -81,6 +81,11 @@ class BotRuntimeConfig:
     scope: str = "day"
     risk_params: BotRiskParams = field(default_factory=BotRiskParams)
     max_positions: int = 2
+    # Strategy IDs this bot trades — primary strategy is strategy_ids[0]; the
+    # rest are reserved for an ensemble vote once the daemon implements
+    # multi-strategy aggregation. Empty list means "no strategy configured" —
+    # the daemon will fall back to a neutral signal rather than guess.
+    strategy_ids: list[str] = field(default_factory=list)
     nn_feature_vector: list[float] = field(default_factory=list)
     nn_detection_timeframe: Optional[str] = None
     nn_detection_bar_window: Optional[int] = None
@@ -393,7 +398,24 @@ class ExecutionDaemon:
             regime_confidence=confidence,
         )
         if decision.action == "NEUTRAL":
-            self._publish_event(state, kind="ensemble", action="NEUTRAL", reason=decision.reason)
+            # Surface what the components actually said so a chain of NEUTRAL
+            # events is diagnosable from /daemon/list alone — previously the
+            # event only carried 'low_confidence' and the operator had no way
+            # to tell whether the NN, the strategy, the regime gate, or the
+            # min_confidence floor was the cause.
+            self._publish_event(
+                state,
+                kind="ensemble",
+                action="NEUTRAL",
+                reason=decision.reason,
+                nn_action={0: "LONG", 1: "SHORT", 2: "NEUTRAL"}.get(nn_action, "UNK"),
+                nn_confidence=round(nn_conf, 3),
+                strategy_id=(cfg.strategy_ids[0] if cfg.strategy_ids else None),
+                strategy_signal={1: "LONG", -1: "SHORT", 0: "NEUTRAL"}.get(int(strat), "UNK"),
+                regime=regime,
+                regime_confidence=round(confidence, 3),
+                ensemble_confidence=round(float(decision.confidence), 3),
+            )
             return
 
         side = decision.action

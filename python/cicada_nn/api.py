@@ -272,6 +272,10 @@ class DaemonDeployRequest(BaseModel):
     fixed_scope: str | None = None
     allowed_scopes: list[str] = ["scalp", "day", "swing"]
     max_positions: int = 2
+    # Strategies this bot trades; primary is strategy_ids[0]. Default empty
+    # means "no strategy" — the daemon will emit a neutral strategy_signal
+    # so the ensemble relies on the NN only.
+    strategy_ids: list[str] = []
     nn_feature_vector: list[float] = []
     nn_detection_timeframe: str | None = None
     nn_detection_bar_window: int | None = None
@@ -310,6 +314,7 @@ def daemon_deploy(req: DaemonDeployRequest):
         fixed_scope=req.fixed_scope,
         allowed_scopes=list(req.allowed_scopes) if req.allowed_scopes else ["scalp", "day", "swing"],
         max_positions=req.max_positions,
+        strategy_ids=list(req.strategy_ids),
         nn_feature_vector=list(req.nn_feature_vector),
         nn_detection_timeframe=req.nn_detection_timeframe,
         nn_detection_bar_window=req.nn_detection_bar_window,
