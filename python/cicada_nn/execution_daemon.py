@@ -395,6 +395,14 @@ class ExecutionDaemon:
             self._publish_event(state, kind="scope_paused", reason="manual scope not in allowed set or all candidates filtered")
             return
 
+        # Rebind ``rules`` from the SELECTED scope so SL clamping and
+        # validate_order use the mode the selector actually picked — not the
+        # bot's static ``trade_style`` from config. The advance_open_positions
+        # call above still uses the cfg-derived rules; per-position mode
+        # tracking is a separate (bigger) fix.
+        _scope_to_style = {"scalp": "scalping", "day": "day", "swing": "swing", "position": "swing"}
+        rules = TRADE_MODES[_scope_to_style.get(active_scope, "day")]
+
         # NN predict
         try:
             pred = self._predict(cfg, bars, regime, confidence, price)
