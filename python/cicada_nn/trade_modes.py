@@ -287,7 +287,10 @@ def validate_order(
             RejectReason.SL_TOO_TIGHT,
             f"{sl_atr_mult:.3f}xATR < {rules.min_sl_atr:.3f}",
         )
-    if sl_atr_mult > rules.max_sl_atr:
+    # 1e-6 epsilon — the daemon clamps mult to exactly rules.max_sl_atr but
+    # IEEE-754 rounding in (entry - stop)/atr produces e.g. 1.0000000052, which
+    # is mathematically equal to 1.0 but compares > under strict float ordering.
+    if sl_atr_mult > rules.max_sl_atr + 1e-6:
         return ValidationResult.reject(
             RejectReason.SL_TOO_WIDE,
             f"{sl_atr_mult:.3f}xATR > {rules.max_sl_atr:.3f}",
